@@ -1,0 +1,16 @@
+{
+  "name": "birddraw",
+  "version": "0.1.0",
+  "description": "Procedurally generated perched-bird line drawings for pen plotters, adapted from fishdraw",
+  "main": "birddraw.js",
+  "bin": {
+    "birddraw": "birddraw.js"
+  },
+  "scripts": {
+    "gallery": "node tools/gallery.js 24",
+    "test": "node test/determinism.js 50"
+  },
+  "keywords": ["generative", "procedural", "plotter", "svg", "birds", "fishdraw"],
+  "license": "MIT",
+  "dependencies": {}
+}

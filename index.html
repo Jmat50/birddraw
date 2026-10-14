@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>birddraw</title>
+<style>
+  body{font-family:sans-serif;background:#eee;margin:0;padding:20px;display:flex;flex-direction:column;align-items:center}
+  #bar{display:flex;gap:6px;margin-bottom:12px;align-items:center}
+  #seed{width:260px;padding:4px}
+  #out svg{background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.2);width:min(92vw,690px);height:auto}
+  #info{font-size:12px;color:#666;margin-top:8px}
+</style>
+</head>
+<body>
+<div id="bar">
+  <input id="seed" placeholder="seed (any text)">
+  <button id="draw">draw</button>
+  <button id="rand">random</button>
+  <button id="svg">download svg</button>
+  <label><input id="anim" type="checkbox"> animate</label>
+</div>
+<div id="out"></div>
+<div id="info"></div>
+<script src="birddraw.js"></script>
+<script>
+let current = null;
+function render(seed){
+  let t0 = performance.now();
+  let polylines = main(seed);
+  let ms = Math.round(performance.now() - t0);
+  let anim = document.getElementById('anim').checked;
+  current = {seed, svg: draw_svg(polylines)};
+  document.getElementById('out').innerHTML = anim ? draw_svg_anim(polylines, 0.005) : current.svg;
+  document.getElementById('seed').value = seed;
+  document.getElementById('info').textContent = `${polylines.length} polylines, ${ms} ms`;
+  location.hash = encodeURIComponent(seed);
+}
+function random_seed(){
+  return seed_name(String(Math.random()));
+}
+document.getElementById('draw').onclick = () => render(document.getElementById('seed').value || random_seed());
+document.getElementById('rand').onclick = () => render(random_seed());
+document.getElementById('seed').onkeydown = e => { if (e.key == 'Enter') document.getElementById('draw').onclick(); };
+document.getElementById('svg').onclick = () => {
+  if (!current) return;
+  let a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([current.svg], {type: 'image/svg+xml'}));
+  a.download = current.seed.replace(/[^A-Za-z0-9]+/g, '_') + '.svg';
+  a.click();
+};
+render(location.hash ? decodeURIComponent(location.hash.slice(1)) : random_seed());
+</script>
+</body>
+</html>
