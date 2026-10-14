@@ -1,11 +1,16 @@
 // Render a batch of birds to samples/*.svg plus a samples/index.html contact sheet.
 // usage: node tools/gallery.js [count=24] [prefix]
 //        node tools/gallery.js --seeds "Seed one" "Seed two" ...
+//        node tools/gallery.js --anim [count=8] [prefix]   (idle GIFs to samples/anim/)
 const fs = require('fs');
 const path = require('path');
 const bd = require('../birddraw.js');
 
 let args = process.argv.slice(2);
+if (args[0] == '--anim'){
+  anim_gallery(Number(args[1] || 8), args[2] || 'alive');
+  return;
+}
 let seeds = [];
 if (args[0] == '--seeds'){
   seeds = args.slice(1);
@@ -52,3 +57,33 @@ figcaption{font-size:11px;color:#666}
 ${cells.join('\n')}
 </main></body></html>
 `);
+
+function anim_gallery(n, prefix){
+  let out = path.join(__dirname, '..', 'samples', 'anim');
+  fs.mkdirSync(out, {recursive: true});
+  let cells = [];
+  for (let i = 0; i < n; i++){
+    let seed = bd.seed_name(prefix + i);
+    let t0 = Date.now();
+    let an = bd.animator(seed);
+    let gif = bd.anim_gif(an, 15, 0.75);
+    let file = seed.replace(/[^A-Za-z0-9]+/g, '_') + '.gif';
+    fs.writeFileSync(path.join(out, file), gif);
+    let tl = an.timeline;
+    let desc = `${an.arg.archetype}; ${(an.ap.breath_f*60).toFixed(0)} breaths/min, ${tl.segs.length} head moves (${an.ap.style}), ${tl.blinks.length} blinks, tail ${an.ap.tail_style}`;
+    console.log(`${seed.padEnd(24)} ${String(Date.now() - t0).padStart(6)} ms  ${(gif.length/1024).toFixed(0).padStart(5)} KB  ${desc}`);
+    cells.push(`<figure><img src="${file}"><figcaption>${seed}<br>${desc}</figcaption></figure>`);
+  }
+  fs.writeFileSync(path.join(out, 'index.html'), `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>birddraw idle gallery</title>
+<style>
+body{font-family:sans-serif;background:#eee;margin:20px}
+main{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+figure{margin:0;background:#fff;padding:6px}
+img{width:100%;display:block}
+figcaption{font-size:11px;color:#666}
+</style></head><body><main>
+${cells.join('\n')}
+</main></body></html>
+`);
+}

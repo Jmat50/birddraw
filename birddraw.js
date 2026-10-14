@@ -1688,6 +1688,7 @@ function head_parts(arg,hc,HR,body_world){
   }
 
   let lines = clip(closed(hp),body_world).false;
+  let n_seam = lines.length;
   let fp = face_predicate(arg,hc,HR,E,ER,bbase);
   if (fp){
     lines.push(...patternshade_shape(hp,2.1,fp));
@@ -1701,6 +1702,8 @@ function head_parts(arg,hc,HR,body_world){
   }));
   lines.push(...shade_shape(hp,4,2,HR*0.35).filter(l=>rand()<0.8));
   let masks = [hp];
+  let n_end = lines.length;
+  let crest = null;
 
   if (arg.crest){
     let a0 = PI*1.3, a1 = PI*1.9;
@@ -1710,16 +1713,17 @@ function head_parts(arg,hc,HR,body_world){
       cv.push([hc[0]+Math.cos(a)*HR*1.0, hc[1]+Math.sin(a)*HR*0.92]);
     }
     let cl = arg.crest_len*HR;
-    let [cpoly,clines] = fin_a(cv,0.62,0.95,t=>cl*(0.2+0.8*Math.pow(Math.sin(PI*(0.1+t*0.62)),1.5)),false,0,0,6);
-    clines = clip_multi(clines,hp).false;
+    let [cpoly,clines_raw] = fin_a(cv,0.62,0.95,t=>cl*(0.2+0.8*Math.pow(Math.sin(PI*(0.1+t*0.62)),1.5)),false,0,0,6);
+    let clines = clip_multi(clines_raw,hp).false;
     lines.push(...clines);
     masks.push(cpoly);
+    crest = {poly:cpoly, lines:clines_raw, base:cv[7]};
   }
   return {
     beak: bk,
     eye: part(eye_lines,[eye_mask]),
     head: part(lines,masks),
-    hp, E, ER, bbase,
+    hp, E, ER, bbase, crest, n_seam, n_end,
   };
 }
 
@@ -1913,21 +1917,23 @@ function tail_part(arg,BL,BH){
   let occ = new Occluder();
   let lines = [];
   let masks = [];
-  let add = fe=>{
+  let raw = [];
+  let add = (fe,kind,i)=>{
     lines.push(...occ.clip(fe.lines));
     occ.add(fe.poly);
     masks.push(fe.poly);
+    raw.push({kind, i, poly:fe.poly, lines:fe.lines});
   };
   let dir = a=>[Math.cos(a),Math.sin(a)];
   for (let j = 0; j < 3; j++){
     let b = [base[0]-BL*0.05+j*BL*0.02, base[1]-BH*0.12+j*BH*0.05];
     let d = dir(ang0-0.05);
-    add(feather(b,[b[0]+d[0]*TL*0.35,b[1]+d[1]*TL*0.35],TL*0.14,{tip:'round',asym:0.5,n:12}));
+    add(feather(b,[b[0]+d[0]*TL*0.35,b[1]+d[1]*TL*0.35],TL*0.14,{tip:'round',asym:0.5,n:12}),'upper_cov',j);
   }
   for (let j = 0; j < 2; j++){
     let b = [base[0]-BL*0.06, base[1]+BH*0.2+j*BH*0.06];
     let d = dir(ang0+0.25);
-    add(feather(b,[b[0]+d[0]*TL*0.3,b[1]+d[1]*TL*0.3],TL*0.13,{tip:'round',asym:0.5,n:12}));
+    add(feather(b,[b[0]+d[0]*TL*0.3,b[1]+d[1]*TL*0.3],TL*0.13,{tip:'round',asym:0.5,n:12}),'under_cov',j);
   }
   let style = arg.wing_style;
   for (let i = 0; i < k; i++){
@@ -1940,9 +1946,12 @@ function tail_part(arg,BL,BH){
     let o = {tip, asym:0.45, n:18, bend:-0.02+deviate(0.01), barbs:arg.barb_density*0.7};
     if (style == 'barred') o.bars = TL*0.12;
     else if (style == 'dark_flight') {o.dark = 1; o.dark_len = 0.95; o.dark_w = 0.85; o.dark_step = 2.4;}
-    add(feather(b,[b[0]+d[0]*len,b[1]+d[1]*len],w,o));
+    add(feather(b,[b[0]+d[0]*len,b[1]+d[1]*len],w,o),'rect',i);
   }
-  return part(lines,masks);
+  let p = part(lines,masks);
+  p.raw = raw;
+  p.pivot = base;
+  return p;
 }
 
 // ===== legs, feet, perch (world frame) =====
@@ -2047,7 +2056,9 @@ function perch_part(x0,x1,F,PT,tilt){
 
 // ===== the bird =====
 
-function bird(arg){
+// build_rig keeps the exact legacy compose list (so static output and RNG use
+// are unchanged) plus the metadata the idle animation needs.
+function build_rig(arg){
   let BL = arg.body_length;
   let BH = BL*arg.body_plump/2;
   let th = arg.posture;
@@ -2055,7 +2066,9 @@ function bird(arg){
 
   let body = map_part(body_part(arg,BL,BH),R);
   let wing = map_part(wing_part(arg,BL,BH),R);
-  let tail = map_part(tail_part(arg,BL,BH),R);
+  let tp = tail_part(arg,BL,BH);
+  let tail = map_part(tp,R);
+  let tail_raw = tp.raw.map(f=>({kind:f.kind, i:f.i, poly:f.poly.map(R), lines:map_lines(f.lines,R)}));
   let body_world = body.masks[0];
 
   let HR = BH*arg.head_ratio;
@@ -2063,7 +2076,8 @@ function bird(arg){
   let hc = [Nw[0]-HR*0.1, Nw[1]-HR*(0.25+arg.neck)];
   let hd = head_parts(arg,hc,HR,body_world);
 
-  let bc = body_curves(arg,BL,BH).c1;
+  let bcs = body_curves(arg,BL,BH);
+  let bc = bcs.c1;
   let hi = 17;
   let H = R([bc[hi][0], bc[hi][1]*0.8]);
   let lowest = Math.max(...body_world.map(p=>p[1]));
@@ -2088,25 +2102,44 @@ function bird(arg){
   let x1 = Math.max(bb.x+bb.w, F[0]) + BL*(0.02+rand()*0.12);
   let perch = perch_part(x0,x1,F,PT,arg.perch_tilt);
 
-  let drawing = compose([
-    near.front,
-    hd.beak,
-    hd.eye,
-    hd.head,
-    wing,
-    body,
-    near.tarsus,
-    perch,
-    near.hallux,
-    tail,
-    far.tarsus,
-    far.front,
-    far.hallux,
-  ]);
-  if (arg.facing){
+  return {
+    arg,
+    legacy: [
+      near.front,
+      hd.beak,
+      hd.eye,
+      hd.head,
+      wing,
+      body,
+      near.tarsus,
+      perch,
+      near.hallux,
+      tail,
+      far.tarsus,
+      far.front,
+      far.hallux,
+    ],
+    meta: {
+      BL, BH, th, c0:bcs.c0, c1:bcs.c1, H, F,
+      hc, HR, E:hd.E, ER:hd.ER, bbase:hd.bbase, hp:hd.hp,
+      crest:hd.crest, n_seam:hd.n_seam, n_end:hd.n_end,
+      tail_raw, tail_pivot:R(tp.pivot),
+      shoulder:R([-BL*0.3,-BH*0.18]),
+      body_outline:body_world,
+    },
+  };
+}
+
+function render_static(rig){
+  let drawing = compose(rig.legacy);
+  if (rig.arg.facing){
     drawing = drawing.map(l=>l.map(([x,y])=>[-x,y]));
   }
   return drawing;
+}
+
+function bird(arg){
+  return render_static(build_rig(arg));
 }
 
 // ===== parameters =====
@@ -2262,11 +2295,14 @@ function generate_params(){
   let an = choice(names);
   let A = ARCHETYPES[an];
   let B = null, bw = 0;
+  let bn = null;
   if (rand() < 0.3){
-    B = ARCHETYPES[choice(names)];
+    bn = choice(names);
+    B = ARCHETYPES[bn];
     bw = rand()*0.6;
   }
   arg.archetype = B ? an+'+' : an;
+  arg.archetype_mix = [an, bn, bw];
   let src = (B && rand() < bw) ? B : A;
 
   let keys = Object.keys(PARAM_SPREAD);
@@ -2359,24 +2395,38 @@ function binomen(){
 
 // ===== output stage (adapted from fishdraw: parameterised frame size) =====
 
-function reframe(polylines,pad=20,text=null,W=FRAME_W,H=FRAME_H){
+function frame_fit(bbox,pad=20,text=false,W=FRAME_W,H=FRAME_H){
   let w = (W-pad*2);
   let h = (H-pad*2) - (text?10:0);
-  let bbox = get_bbox(polylines.flat());
   let s = Math.min(w/bbox.w, h/bbox.h);
-  let px = (w-bbox.w*s)/2;
-  let py = (h-bbox.h*s)/2;
+  return {s, x:bbox.x, y:bbox.y, px:(w-bbox.w*s)/2, py:(h-bbox.h*s)/2, pad};
+}
+
+function fit_pt(f,x,y){
+  return [(x-f.x)*f.s+f.px+f.pad, (y-f.y)*f.s+f.py+f.pad];
+}
+
+function apply_fit(polylines,f){
   for (let i = 0; i < polylines.length; i++){
     for (let j = 0; j < polylines[i].length; j++){
       let [x,y] = polylines[i][j];
-      polylines[i][j] = [(x-bbox.x)*s+px+pad, (y-bbox.y)*s+py+pad];
+      polylines[i][j] = fit_pt(f,x,y);
     }
   }
+  return polylines;
+}
+
+function caption_lines(text,pad=20,W=FRAME_W,H=FRAME_H){
+  let [tw,tp] = put_text(text);
+  tp = tp.map(p=>scl_poly(shr_poly(p,-0.3),0.3,0.3));
+  tw *= 0.3;
+  return tp.map(p=>trsl_poly(p,W/2-tw/2,H-pad+5));
+}
+
+function reframe(polylines,pad=20,text=null,W=FRAME_W,H=FRAME_H){
+  apply_fit(polylines,frame_fit(get_bbox(polylines.flat()),pad,!!text,W,H));
   if (text){
-    let [tw,tp] = put_text(text);
-    tp = tp.map(p=>scl_poly(shr_poly(p,-0.3),0.3,0.3));
-    tw *= 0.3;
-    polylines.push(...tp.map(p=>trsl_poly(p,W/2-tw/2,H-pad+5)));
+    polylines.push(...caption_lines(text,pad,W,H));
   }
   return polylines;
 }
@@ -2471,6 +2521,1039 @@ F
   return o;
 }
 
+// ===== idle animation: cached rig =====
+// Geometry is built once and only transformed per frame, so hatching and
+// plumage stick to the surface instead of swimming. Clipping commutes with any
+// continuous bijective map applied to both lines and masks, so parts that share
+// a motion group keep their mutual occlusion from a one-off pre-clip; per frame
+// we only clip against masks of parts in other groups.
+
+let D2R = PI/180;
+
+function make_rng(s){
+  let x = (str_to_seed(String(s)) >>> 0) || 0x9e3779b9;
+  return ()=>{
+    x ^= x << 13; x >>>= 0;
+    x ^= x >>> 17;
+    x ^= x << 5; x >>>= 0;
+    return x/4294967296;
+  };
+}
+
+function make_tri(rng){
+  return (a,b,c)=>{
+    if (c <= a) return b;
+    let u = rng(), F = (b-a)/(c-a);
+    return u < F ? a+Math.sqrt(u*(c-a)*(b-a)) : c-Math.sqrt((1-u)*(c-a)*(c-b));
+  };
+}
+
+function densify(l,step){
+  let o = [l[0]];
+  for (let i = 1; i < l.length; i++){
+    let a = l[i-1], b = l[i];
+    let n = Math.ceil(Math.hypot(b[0]-a[0],b[1]-a[1])/step);
+    for (let k = 1; k < n; k++) o.push([a[0]+(b[0]-a[0])*k/n, a[1]+(b[1]-a[1])*k/n]);
+    o.push(b);
+  }
+  return o;
+}
+
+function densify_poly(poly,step){
+  return densify(closed(poly),step).slice(0,-1);
+}
+
+function chunk_line(l,maxlen){
+  let out = [], cur = [l[0]], acc = 0;
+  for (let i = 1; i < l.length; i++){
+    acc += dist(...l[i-1],...l[i]);
+    cur.push(l[i]);
+    if (acc >= maxlen && i < l.length-1){
+      out.push(cur);
+      cur = [l[i]];
+      acc = 0;
+    }
+  }
+  if (cur.length > 1) out.push(cur);
+  return out;
+}
+
+function prep_lines(lines){
+  let o = [];
+  for (let i = 0; i < lines.length; i++){
+    let l = lines[i];
+    if (!l || l.length < 2) continue;
+    o.push(...chunk_line(densify(l,2),24));
+  }
+  return o;
+}
+
+function mask_item(poly,group){
+  let n = poly.length;
+  let e = new Float64Array(n*4);
+  for (let i = 0; i < n; i++){
+    let a = poly[i], b = poly[(i+1)%n];
+    e[i*4] = a[0]; e[i*4+1] = a[1]; e[i*4+2] = b[0]; e[i*4+3] = b[1];
+  }
+  return {poly, bb:get_bbox(poly), group, e, n};
+}
+
+function inside_item(it,x,y){
+  let e = it.e, c = false;
+  for (let k = 0; k < it.n; k++){
+    let x0 = e[k*4], y0 = e[k*4+1], x1 = e[k*4+2], y1 = e[k*4+3];
+    if ((y0 > y) != (y1 > y) && x < (x1-x0)*(y-y0)/(y1-y0)+x0) c = !c;
+  }
+  return c;
+}
+
+// Pieces of polyline l outside the mask (same semantics as clip(l,poly).false,
+// with per-edge bbox rejection and no per-edge allocation).
+function clip_out(l,it){
+  let e = it.e, n = it.n;
+  let inside = inside_item(it,l[0][0],l[0][1]);
+  let out = [];
+  let cur = inside ? null : [l[0]];
+  let ts = [];
+  for (let i = 0; i+1 < l.length; i++){
+    let ax = l[i][0], ay = l[i][1], bx = l[i+1][0], by = l[i+1][1];
+    let sx0 = Math.min(ax,bx), sx1 = Math.max(ax,bx), sy0 = Math.min(ay,by), sy1 = Math.max(ay,by);
+    let dx = bx-ax, dy = by-ay;
+    ts.length = 0;
+    for (let k = 0; k < n; k++){
+      let cx = e[k*4], cy = e[k*4+1], ex = e[k*4+2], ey = e[k*4+3];
+      if ((cx < sx0 && ex < sx0) || (cx > sx1 && ex > sx1) || (cy < sy0 && ey < sy0) || (cy > sy1 && ey > sy1)) continue;
+      let fx = ex-cx, fy = ey-cy;
+      let den = dx*fy - dy*fx;
+      if (!den) continue;
+      let t = ((cx-ax)*fy - (cy-ay)*fx)/den;
+      let u = ((cx-ax)*dy - (cy-ay)*dx)/den;
+      if (t >= 0 && t < 1 && u >= 0 && u < 1) ts.push(t);
+    }
+    if (ts.length > 1) ts.sort((p,q)=>p-q);
+    for (let j = 0; j < ts.length; j++){
+      let p = [ax+dx*ts[j], ay+dy*ts[j]];
+      inside = !inside;
+      if (inside){
+        cur.push(p);
+        if (cur.length > 1) out.push(cur);
+        cur = null;
+      }else{
+        cur = [p];
+      }
+    }
+    if (!inside) cur.push(l[i+1]);
+  }
+  if (cur && cur.length > 1) out.push(cur);
+  return out;
+}
+
+function FastOccluder(items){
+  this.items = items || [];
+}
+FastOccluder.prototype.add = function(poly){
+  if (!poly || poly.length < 3) return;
+  this.items.push(mask_item(poly));
+};
+FastOccluder.prototype.clip = function(lines){
+  let out = [];
+  for (let k = 0; k < lines.length; k++){
+    let l = lines[k];
+    if (!l || l.length < 2) continue;
+    let cur = [l];
+    let bb = get_bbox(l);
+    for (let i = 0; i < this.items.length && cur.length; i++){
+      let it = this.items[i];
+      if (!bbox_overlap(bb,it.bb)) continue;
+      let next = [];
+      for (let j = 0; j < cur.length; j++){
+        if (cur.length > 1 && !bbox_overlap(get_bbox(cur[j]),it.bb)) next.push(cur[j]);
+        else next.push(...clip_out(cur[j],it));
+      }
+      cur = next;
+    }
+    out.push(...cur);
+  }
+  return out;
+};
+
+function occ_items(items){
+  return new FastOccluder(items);
+}
+
+function split_pred(l,keep){
+  let out = [], cur = [];
+  for (let i = 0; i < l.length; i++){
+    if (keep(l[i][0],l[i][1])){
+      cur.push(l[i]);
+    }else{
+      if (cur.length > 1) out.push(cur);
+      cur = [];
+    }
+  }
+  if (cur.length > 1) out.push(cur);
+  return out;
+}
+
+function map_cull(lines,f){
+  let out = [];
+  for (let i = 0; i < lines.length; i++){
+    let cur = [];
+    for (let j = 0; j < lines[i].length; j++){
+      let q = f(lines[i][j]);
+      if (q){
+        cur.push(q);
+      }else{
+        if (cur.length > 1) out.push(cur);
+        cur = [];
+      }
+    }
+    if (cur.length > 1) out.push(cur);
+  }
+  return out;
+}
+
+let MASK_STEP = {static:0, wing:0, tail:0, body:3, head:2, crest:2};
+
+function anim_rig(rig){
+  let m = rig.meta, L = rig.legacy;
+  let P = (name,group,p)=>({name, group, lines:p.lines, masks:p.masks});
+  let parts = [
+    P('near_front','static',L[0]),
+    P('beak','head',L[1]),
+    P('eye','head',L[2]),
+    P('head','head',{lines:L[3].lines.slice(m.n_seam,m.n_end), masks:[m.hp]}),
+  ];
+  if (m.crest) parts.push(P('crest','crest',{lines:m.crest.lines, masks:[m.crest.poly]}));
+  parts.push(
+    P('wing','wing',L[4]),
+    P('body','body',L[5]),
+    P('near_tarsus','static',L[6]),
+    P('perch','static',L[7]),
+    P('near_hallux','static',L[8]),
+    P('tail','tail',{lines:[], masks:[]}),
+    P('far_tarsus','static',L[10]),
+    P('far_front','static',L[11]),
+    P('far_hallux','static',L[12]),
+  );
+  for (let i = 0; i < parts.length; i++){
+    let p = parts[i];
+    let step = MASK_STEP[p.group];
+    if (step && p.name != 'head') p.masks = p.masks.map(mk=>densify_poly(mk,step));
+  }
+  for (let i = 0; i < parts.length; i++){
+    let p = parts[i];
+    let items = [];
+    for (let j = 0; j < i; j++){
+      if (parts[j].group != p.group) continue;
+      for (let k = 0; k < parts[j].masks.length; k++) items.push(mask_item(parts[j].masks[k]));
+    }
+    p.lines = occ_items(items).clip(prep_lines(p.lines));
+  }
+  let tail = m.tail_raw.map(f=>({kind:f.kind, i:f.i, poly:f.poly, lines:prep_lines(f.lines)}));
+
+  // cross-group candidates: front parts whose rest bbox, grown by the largest
+  // plausible idle displacement, can ever overlap this part
+  let grow = m.BL*0.2;
+  let pbb = parts.map((p,i)=>{
+    let pts = p.masks.flat().concat(p.lines.flat());
+    if (p.group == 'tail') pts = tail.map(f=>f.poly).flat();
+    if (!pts.length) return null;
+    let b = get_bbox(pts);
+    return {x:b.x-grow, y:b.y-grow, w:b.w+grow*2, h:b.h+grow*2};
+  });
+  for (let i = 0; i < parts.length; i++){
+    parts[i].cand = [];
+    for (let j = 0; j < i; j++){
+      if (pbb[i] && pbb[j] && bbox_overlap(pbb[i],pbb[j])) parts[i].cand.push(j);
+    }
+  }
+  let body_outline = parts.find(p=>p.name == 'body').masks[0];
+  return {rig, meta:m, arg:rig.arg, parts, tail, body_outline};
+}
+
+// ===== idle animation: motion maps =====
+
+function body_tb(m,x){
+  let n = m.c0.length;
+  let fi = clamp((x+m.BL/2)/m.BL,0,1)*(n-1);
+  let i0 = Math.min(n-2,Math.floor(fi)), f = fi-i0;
+  return [lerp(m.c0[i0][1],m.c0[i0+1][1],f), lerp(m.c1[i0][1],m.c1[i0+1][1],f)];
+}
+
+// Inspiration swings the sternum ventrally and cranially about the shoulder
+// girdle (pump handle); the back, synsacrum and hip stay put.
+function breath_disp(m,q,amp){
+  if (!amp) return [0,0];
+  let u = (q[0]+m.BL/2)/m.BL;
+  let [top,bot] = body_tb(m,q[0]);
+  let v = clamp((q[1]-top)/Math.max(1e-6,bot-top),0,1);
+  let w = Math.pow(smoothstep(0.15,1,v),1.3)*Math.exp(-Math.pow((u-0.48)/0.3,2));
+  let k = amp*m.BH*w;
+  return [-0.25*k,k];
+}
+
+// 2.5D head: points inside the head silhouette are lifted onto an ellipsoid
+// (skulls are laterally narrow, so c < a), everything else (beak, crest,
+// bristles) lies in the midsagittal plane z = 0. Rotation is about the
+// atlanto-occipital joint, posterior-ventral of the skull centre.
+function head_map(m,pose){
+  let a = m.HR*1.04, b = m.HR, c = m.HR*0.8;
+  let cy = Math.cos(pose.yaw), sy = Math.sin(pose.yaw);
+  let cr = Math.cos(pose.roll), sr = Math.sin(pose.roll);
+  let cp = Math.cos(pose.pitch), sp = Math.sin(pose.pitch);
+  let rot = (X,Y,Z)=>{
+    let x1 = X*cy + Z*sy, z1 = -X*sy + Z*cy;
+    let y2 = Y*cr - z1*sr, z2 = Y*sr + z1*cr;
+    return [x1*cp - y2*sp, x1*sp + y2*cp, z2];
+  };
+  let inv = (X,Y,Z)=>{
+    let x1 = X*cp + Y*sp, y1 = -X*sp + Y*cp;
+    let y2 = y1*cr + Z*sr, z2 = -y1*sr + Z*cr;
+    return [x1*cy - z2*sy, y2, x1*sy + z2*cy];
+  };
+  let K = [0.3*a, 0.45*b];
+  let rk = rot(-K[0],-K[1],0);
+  let cc = [rk[0]+K[0], rk[1]+K[1]];
+  let d = inv(0,0,1);
+  let qa = (d[0]/a)*(d[0]/a) + (d[1]/b)*(d[1]/b) + (d[2]/c)*(d[2]/c);
+  let hc = m.hc;
+  let ident = !pose.yaw && !pose.roll && !pose.pitch;
+  let proj = (x,y,z)=>{
+    let r = rot(x-K[0],y-K[1],z);
+    return [hc[0]+r[0]+K[0], hc[1]+r[1]+K[1]];
+  };
+  let f = (p,cull)=>{
+    if (ident) return [p[0],p[1]];
+    let x = p[0]-hc[0], y = p[1]-hc[1];
+    let r2 = (x/a)*(x/a) + (y/b)*(y/b);
+    if (r2 < 1){
+      let z = c*Math.sqrt(1-r2);
+      if (cull){
+        let n = rot(x/(a*a), y/(b*b), z/(c*c));
+        if (n[2] < -1e-9) return null;
+      }
+      return proj(x,y,z);
+    }
+    if (cull){
+      let qb = 2*(x*d[0]/(a*a) + y*d[1]/(b*b));
+      let disc = qb*qb - 4*qa*(r2-1);
+      if (disc >= 0 && -qb/(2*qa) > 0) return null;
+    }
+    return proj(x,y,0);
+  };
+  let sx = Math.sqrt(cy*cy + (c/a)*(c/a)*sy*sy);
+  let sy2 = Math.sqrt(cr*cr + (c/b)*(c/b)*sr*sr);
+  let sil = p=>{
+    let x = (p[0]-hc[0])*sx, y = (p[1]-hc[1])*sy2;
+    return [hc[0]+cc[0]+x*cp-y*sp, hc[1]+cc[1]+x*sp+y*cp];
+  };
+  return {f, sil};
+}
+
+function anim_maps(A,pose){
+  let m = A.meta;
+  let ct = Math.cos(m.th), st = Math.sin(m.th);
+  let to_body = p=>[p[0]*ct+p[1]*st, -p[0]*st+p[1]*ct];
+  let from_body = q=>[q[0]*ct-q[1]*st, q[0]*st+q[1]*ct];
+  let tee = pose.teeter;
+  let post = tee ? (p=>rot_pt(p,-tee,m.H[0],m.H[1])) : (p=>p);
+  let amp = pose.breath;
+  let body = p=>{
+    if (!amp) return post(p);
+    let d = from_body(breath_disp(m,to_body(p),amp));
+    return post([p[0]+d[0],p[1]+d[1]]);
+  };
+  // the folded wing rides rigidly on the flank: it follows the ribcage at the
+  // mid-flank with a fraction of the belly displacement, pivoting at the shoulder
+  let [tq,bq] = body_tb(m,-m.BL*0.05);
+  let dw = from_body(breath_disp(m,[-m.BL*0.05,lerp(tq,bq,0.6)],amp));
+  let wa = -0.3*D2R*amp/0.025;
+  let S = m.shoulder;
+  let wing = p=>{
+    if (!amp) return post(p);
+    let q = rot_pt(p,wa,S[0],S[1]);
+    return post([q[0]+dw[0]*0.3, q[1]+dw[1]*0.3]);
+  };
+  let hm = head_map(m,pose);
+  let head_c = p=>{ let q = hm.f(p,true); return q && post(q); };
+  let head = p=>post(hm.f(p,false));
+  let sil = p=>post(hm.sil(p));
+  let cb = m.crest ? m.crest.base : [0,0];
+  let crest_c = p=>head_c(pose.crest ? rot_pt(p,pose.crest,cb[0],cb[1]) : p);
+  let crest = p=>head(pose.crest ? rot_pt(p,pose.crest,cb[0],cb[1]) : p);
+  let TP = m.tail_pivot;
+  let tail = f=>{
+    let a = f.kind == 'rect'
+      ? -pose.tail + f.i*0.045*pose.spread
+      : -pose.tail*(f.kind == 'upper_cov' ? 0.35 : 0.25);
+    return a ? (p=>post(rot_pt(p,a,TP[0],TP[1]))) : post;
+  };
+  return {static:p=>p, body, wing, head, head_c, sil, crest, crest_c, tail};
+}
+
+// Eye overlays, built in head-local 2D before the head map.
+// Nictitating membrane: translucent, sweeps from the anterior (nasal) corner
+// backward and slightly down. Eyelid: lower lid in most birds, upper in owls.
+function eye_overlay(m,pose,lines){
+  let ex = m.E[0], ey = m.E[1], R = m.ER;
+  let out = {lines, extra:[]};
+  let lid = pose.lid;
+  if (lid > 0.01){
+    let upper = pose.lid_upper;
+    let edge = dx=>-1.05 + 2.1*lid + 0.25*(1-dx*dx)*Math.min(1,lid*3);
+    let rr = 1.15;
+    let covered = (x,y)=>{
+      let dx = (x-ex)/R, dy = (y-ey)/R;
+      if (dx*dx+dy*dy > rr*rr) return false;
+      return upper ? dy < edge(dx) : -dy < edge(dx);
+    };
+    out.lines = [];
+    for (let i = 0; i < lines.length; i++) out.lines.push(...split_pred(lines[i],(x,y)=>!covered(x,y)));
+    let el = [];
+    for (let dx = -rr; dx <= rr+1e-9; dx += 0.05){
+      let dy = upper ? edge(dx) : -edge(dx);
+      if (dx*dx+dy*dy <= rr*rr){
+        el.push([ex+dx*R, ey+dy*R]);
+      }else{
+        if (el.length > 1) out.extra.push(el);
+        el = [];
+      }
+    }
+    if (el.length > 1) out.extra.push(el);
+    for (let k = -1.1; k <= 1.1; k += Math.max(0.32,2.2/R)){
+      let hl = [];
+      for (let dx = -rr; dx <= rr; dx += 0.08) hl.push([ex+dx*R, ey+k*R]);
+      out.extra.push(...split_pred(hl,(x,y)=>{
+        if (!covered(x,y)) return false;
+        let dx = (x-ex)/R, dy = (y-ey)/R;
+        return Math.abs(dy-(upper ? edge(dx) : -edge(dx))) > 0.12;
+      }));
+    }
+  }
+  let nn = pose.nict;
+  if (nn > 0.01){
+    let ca = Math.cos(0.26), sa = Math.sin(0.26);
+    let ue = v=>-1.3 + 2.6*nn + 0.3*(1-v*v);
+    let cov = (x,y)=>{
+      let dx = (x-ex)/R, dy = (y-ey)/R;
+      if (dx*dx+dy*dy > 1) return false;
+      return dx*ca+dy*sa < ue(-dx*sa+dy*ca);
+    };
+    let el = [];
+    for (let v = -1.2; v <= 1.2; v += 0.05){
+      let u = ue(v);
+      let dx = u*ca - v*sa, dy = u*sa + v*ca;
+      if (dx*dx+dy*dy <= 1){
+        el.push([ex+dx*R, ey+dy*R]);
+      }else{
+        if (el.length > 1) out.extra.push(el);
+        el = [];
+      }
+    }
+    if (el.length > 1) out.extra.push(el);
+    for (let k = -2; k <= 2; k += Math.max(0.3,2.6/R)){
+      let hl = [];
+      for (let t = -1.2; t <= 1.2; t += 0.06) hl.push([ex+t*R, ey+(t+k)*R]);
+      out.extra.push(...split_pred(hl,cov));
+    }
+  }
+  return out;
+}
+
+// ===== idle animation: renderers =====
+
+function anim_frame(A,pose,painter){
+  let m = A.meta;
+  let mp = anim_maps(A,pose);
+  let out = [];
+  for (let i = 0; i < A.parts.length; i++){
+    let p = A.parts[i];
+    let fr = {name:p.name, group:p.group, cand:p.cand, lines:[], dyn:[], masks:[]};
+    let g = p.group;
+    if (g == 'tail'){
+      fr.feathers = A.tail.map(f=>{
+        let fn = mp.tail(f);
+        return {poly:f.poly.map(fn), lines:map_lines(f.lines,fn)};
+      });
+      if (!painter){
+        let occ = new FastOccluder();
+        for (let k = 0; k < fr.feathers.length; k++){
+          fr.lines.push(...occ.clip(fr.feathers[k].lines));
+          occ.add(fr.feathers[k].poly);
+        }
+      }
+      fr.masks = fr.feathers.map(f=>f.poly);
+    }else if (g == 'head' || g == 'crest'){
+      let fc = g == 'head' ? mp.head_c : mp.crest_c;
+      let fm = g == 'head' ? mp.head : mp.crest;
+      let src = p.lines;
+      if (p.name == 'eye'){
+        let ov = eye_overlay(m,pose,src);
+        src = ov.lines;
+        fr.dyn.push(...map_cull(ov.extra,fc));
+      }
+      fr.lines = map_cull(src,fc);
+      if (p.name == 'head'){
+        fr.masks = p.masks.map(mk=>mk.map(mp.sil));
+        let bo = A.body_outline.map(mp.body);
+        fr.dyn.push(...clip(closed(fr.masks[0]),bo).false);
+      }else{
+        fr.masks = p.masks.map(mk=>mk.map(fm));
+      }
+    }else{
+      let fn = mp[g];
+      fr.lines = map_lines(p.lines,fn);
+      fr.masks = p.masks.map(mk=>mk.map(fn));
+    }
+    out.push(fr);
+  }
+  return out;
+}
+
+// Exact hidden-line render in world space (before facing flip and framing).
+function render_world(A,pose){
+  let fr = anim_frame(A,pose,false);
+  let items = fr.map(p=>p.masks.map(mk=>mask_item(mk,p.group)));
+  let out = [];
+  for (let i = 0; i < fr.length; i++){
+    let p = fr[i];
+    let cross = [], all = [];
+    for (let k = 0; k < p.cand.length; k++){
+      let j = p.cand[k];
+      all.push(...items[j]);
+      if (fr[j].group != p.group) cross.push(...items[j]);
+    }
+    out.push(...occ_items(cross).clip(p.lines));
+    if (p.dyn.length) out.push(...occ_items(all).clip(p.dyn));
+  }
+  return out;
+}
+
+function anim_fin(A){
+  let f = A.fit, flip = A.arg.facing;
+  return p=>fit_pt(f, flip ? -p[0] : p[0], p[1]);
+}
+
+function render_exact(A,pose){
+  let fin = anim_fin(A);
+  let out = render_world(A,pose).map(l=>l.map(p=>{
+    let q = fin(p);
+    return [Math.round(q[0]*100)/100, Math.round(q[1]*100)/100];
+  }));
+  return out.concat(A.caption);
+}
+
+// Painter's algorithm: back to front, fill each mask with paper then stroke.
+// Visibly identical to render_exact, but needs no clipping.
+function render_ops(A,pose){
+  let fin = anim_fin(A);
+  let fr = anim_frame(A,pose,true);
+  let ops = [];
+  let F = ls=>ls.map(l=>l.map(fin));
+  for (let i = fr.length-1; i >= 0; i--){
+    let p = fr[i];
+    if (p.feathers){
+      for (let k = p.feathers.length-1; k >= 0; k--){
+        ops.push({fill:F([p.feathers[k].poly])}, {stroke:F(p.feathers[k].lines)});
+      }
+      continue;
+    }
+    ops.push({fill:F(p.masks)}, {stroke:F(p.lines.concat(p.dyn))});
+  }
+  ops.push({stroke:A.caption});
+  return ops;
+}
+
+// ===== idle animation: behaviour =====
+// Per-archetype temperament. mass (g) drives resting breathing rate through
+// f = 17.2 M^-0.31 breaths/min (Lasiewski & Calder 1971). sacc = head saccades
+// per second; yaw/roll/pitch = fixation spread in degrees; style 'pan' = slow
+// smooth owl head turns instead of saccades; blink = spontaneous blinks per
+// second; couple = probability a saccade carries a blink (Yorzinski 2016);
+// tail = tail-motion style weights, trate = events per second, tamp = degrees.
+let TEMPERAMENT = {
+  finch:      {mass:25,  sacc:1.4,  yaw:15, roll:12, pitch:8,  blink:0.12, couple:0.4, tail:{flick:2,pump:1,none:1}, trate:0.2,  tamp:10},
+  sparrow:    {mass:30,  sacc:1.2,  yaw:15, roll:12, pitch:8,  blink:0.12, couple:0.4, tail:{flick:2,none:2},        trate:0.2,  tamp:9},
+  warbler:    {mass:10,  sacc:2.0,  yaw:16, roll:12, pitch:8,  blink:0.15, couple:0.4, tail:{flick:3,pump:1},        trate:0.35, tamp:12},
+  thrush:     {mass:80,  sacc:0.6,  yaw:14, roll:20, pitch:10, blink:0.1,  couple:0.45,tail:{flick:2,none:1},        trate:0.15, tamp:9},
+  corvid:     {mass:400, sacc:0.7,  yaw:16, roll:22, pitch:10, blink:0.1,  couple:0.5, tail:{none:2,flick:1},        trate:0.1,  tamp:7},
+  raptor:     {mass:800, sacc:0.25, yaw:20, roll:12, pitch:8,  blink:0.08, couple:0.5, tail:{none:3,flick:1},        trate:0.06, tamp:6},
+  parrot:     {mass:300, sacc:0.4,  yaw:16, roll:25, pitch:10, blink:0.1,  couple:0.4, tail:{none:2,flick:1},        trate:0.08, tamp:6},
+  kingfisher: {mass:40,  sacc:0.4,  yaw:12, roll:10, pitch:8,  blink:0.1,  couple:0.4, tail:{pump:2,flick:1},        trate:0.2,  tamp:10},
+  owl:        {mass:400, sacc:0.15, yaw:35, roll:15, pitch:8,  blink:0.08, couple:0.2, tail:{none:1},                trate:0,    tamp:0,
+               style:'pan', lid:'upper', lid_rest:[0.15,0.3,0.5]},
+  swallow:    {mass:20,  sacc:1.0,  yaw:12, roll:10, pitch:6,  blink:0.12, couple:0.4, tail:{none:2,flick:1},        trate:0.1,  tamp:6},
+  wader:      {mass:100, sacc:0.6,  yaw:14, roll:10, pitch:8,  blink:0.1,  couple:0.4, tail:{teeter:1,pump:1},       trate:0.15, tamp:8},
+};
+
+function anim_params(arg,seed,intensity=0.7){
+  let rng = make_rng(seed+'#anim');
+  let tri = make_tri(rng);
+  let mix = arg.archetype_mix || [String(arg.archetype).replace('+',''),null,0];
+  let TA = TEMPERAMENT[mix[0]] || TEMPERAMENT.finch;
+  let TB = mix[1] ? TEMPERAMENT[mix[1]] : null;
+  let bw = mix[2] || 0;
+  let num = k=>TB ? lerp(TA[k],TB[k],bw) : TA[k];
+  let src = (TB && rng() < bw) ? TB : TA;
+  let pick = obj=>{
+    let ks = Object.keys(obj), s = ks.reduce((a,k)=>a+obj[k],0), r = rng()*s;
+    for (let i = 0; i < ks.length; i++){ r -= obj[ks[i]]; if (r <= 0) return ks[i]; }
+    return ks[ks.length-1];
+  };
+  let mass = num('mass')*tri(0.8,1,1.25);
+  let style = src.style || 'saccade';
+  let lid_upper = src.lid == 'upper';
+  let ap = {
+    intensity,
+    mass,
+    breath_f: 17.2*Math.pow(mass/1000,-0.31)/60,
+    breath_amp: 0.025*intensity*tri(0.8,1,1.2),
+    breath_phase: rng(),
+    style,
+    sacc_rate: num('sacc')*tri(0.7,1,1.3),
+    yaw: Math.min(num('yaw')*intensity*tri(0.8,1,1.2), style == 'pan' ? 35 : 25)*D2R,
+    roll: Math.min(num('roll')*intensity*tri(0.8,1,1.2), 25)*D2R,
+    pitch: num('pitch')*intensity*tri(0.8,1,1.2)*D2R,
+    d0: 0.05,
+    k: 0.003,
+    blink_rate: num('blink')*tri(0.7,1,1.3),
+    couple: num('couple'),
+    lid_upper,
+    lid_rest: src.lid_rest ? tri(...src.lid_rest) : 0,
+    blink_dur: lid_upper ? tri(0.3,0.4,0.5) : tri(0.12,0.15,0.2),
+    tail_style: pick(src.tail),
+    tail_rate: num('trate')*tri(0.7,1,1.3),
+    tail_amp: num('tamp')*intensity*tri(0.6,1,1.2)*D2R,
+    tail_tau: tri(0.1,0.12,0.15),
+    crest: !!arg.crest,
+  };
+  return ap;
+}
+
+function rest_pose(ap){
+  return {breath:0, yaw:0, pitch:0, roll:0, crest:0, tail:0, spread:0, teeter:0,
+    nict:0, lid:ap ? ap.lid_rest : 0, lid_upper:ap ? ap.lid_upper : false};
+}
+
+// minimum-jerk position profile (Flash & Hogan 1985)
+function min_jerk(t){
+  t = clamp(t,0,1);
+  return t*t*t*(10-15*t+6*t*t);
+}
+
+function make_timeline(ap,T,seed){
+  let rng = make_rng(seed+'#timeline');
+  let tri = make_tri(rng);
+  let expo = rate=>rate > 0 ? -Math.log(1-rng())/rate : Infinity;
+  let wrap = t=>((t%T)+T)%T;
+
+  let nb = Math.max(1,Math.round(ap.breath_f*T));
+
+  // head: saccades between fixations, still in between, closing on g0
+  let sample = ()=>[tri(-ap.yaw,0,ap.yaw), tri(-ap.pitch,0,ap.pitch), tri(-ap.roll,0,ap.roll)];
+  let dur = (g0,g1)=>{
+    let amp = Math.max(...g0.map((v,i)=>Math.abs(v-g1[i])))/D2R;
+    return ap.style == 'pan' ? lerp(0.6,1.5,clamp(amp/35,0,1)) : ap.d0 + ap.k*amp;
+  };
+  let g0 = sample();
+  let segs = [];
+  let cur = g0, tend = rng()*0.3;
+  for (;;){
+    let t0 = tend + expo(ap.sacc_rate);
+    let g = sample();
+    let D = dur(cur,g);
+    if (!(t0 + D + 0.15 + dur(g,g0) <= T - 0.1)) break;
+    segs.push({t0, t1:t0+D, from:cur, to:g});
+    cur = g;
+    tend = t0+D;
+  }
+  if (segs.length){
+    let D = dur(cur,g0);
+    let t0 = Math.max(tend+0.15, T-0.1-D);
+    segs.push({t0, t1:t0+D, from:cur, to:g0});
+  }else{
+    // slow-scanning birds may draw no move in a short loop; give them one look away and back
+    let g = sample();
+    let D1 = dur(g0,g), D2 = dur(g,g0), hold = tri(0.4,1,2);
+    let span = D1+hold+D2;
+    if (span <= T-0.2){
+      let t0 = 0.1 + rng()*(T-0.2-span);
+      segs.push({t0, t1:t0+D1, from:g0, to:g});
+      segs.push({t0:t0+D1+hold, t1:t0+span, from:g, to:g0});
+    }
+  }
+  let head_at = t=>{
+    let g = g0;
+    for (let i = 0; i < segs.length; i++){
+      let s = segs[i];
+      if (t < s.t0) break;
+      if (t < s.t1){
+        let k = min_jerk((t-s.t0)/(s.t1-s.t0));
+        return s.from.map((v,j)=>lerp(v,s.to[j],k));
+      }
+      g = s.to;
+    }
+    return g;
+  };
+
+  // blinks: coupled to saccade onsets, plus spontaneous ones
+  let blinks = [];
+  for (let i = 0; i < segs.length; i++){
+    if (rng() < ap.couple) blinks.push({t0:segs[i].t0, kind:ap.lid_upper ? 'lid' : 'nict', dur:ap.blink_dur});
+  }
+  for (let t = expo(ap.blink_rate); t < T; t += expo(ap.blink_rate)){
+    let lower = !ap.lid_upper && rng() < 0.1;
+    blinks.push({t0:t, kind:(ap.lid_upper || lower) ? 'lid' : 'nict', dur:lower ? 0.3 : ap.blink_dur});
+  }
+  blinks.sort((a,b)=>a.t0-b.t0);
+  let kept = [];
+  for (let i = 0; i < blinks.length; i++){
+    let b = blinks[i], p = kept[kept.length-1];
+    if (p && b.t0 < p.t0+p.dur+0.1) continue;
+    if (kept.length && b.t0+b.dur+0.1 > T+kept[0].t0) continue;
+    kept.push(b);
+  }
+  blinks = kept;
+  let blink_shape = (b,t)=>{
+    let tau = wrap(t-b.t0);
+    if (tau >= b.dur) return 0;
+    let f = tau/b.dur;
+    return f < 0.4 ? min_jerk(f/0.4) : 1-min_jerk((f-0.4)/0.6);
+  };
+
+  // tail: alpha-function kernels (quick excursion, elastic return), wrapped
+  let tails = [], bouts = [];
+  if (ap.tail_style == 'pump' || ap.tail_style == 'flick'){
+    let sgn = ap.tail_style == 'pump' ? -1 : 1;
+    for (let t = expo(ap.tail_rate); t < T; t += expo(ap.tail_rate)){
+      tails.push({t0:t, A:sgn*ap.tail_amp*tri(0.6,1,1.2)});
+    }
+  }else if (ap.tail_style == 'teeter'){
+    for (let t = expo(0.3); t < T; t += expo(0.3)){
+      bouts.push({t0:t, dur:tri(0.6,1,1.4), f:tri(2,3,4), A:4*D2R*ap.intensity*tri(0.7,1,1.2)});
+    }
+  }
+  let tk = ap.tail_tau;
+  let tail_at = t=>{
+    let s = 0, a = 0;
+    for (let i = 0; i < tails.length; i++){
+      let tau = wrap(t-tails[i].t0);
+      if (tau > 8*tk) continue;
+      let k = tails[i].A*(tau/tk)*Math.exp(1-tau/tk);
+      s += k;
+      a += Math.abs(k);
+    }
+    return [s, 0.3*a/(12*D2R)];
+  };
+  let teeter_at = t=>{
+    let s = 0;
+    for (let i = 0; i < bouts.length; i++){
+      let tau = wrap(t-bouts[i].t0);
+      if (tau >= bouts[i].dur) continue;
+      let h = Math.sin(PI*tau/bouts[i].dur);
+      s += bouts[i].A*Math.sin(2*PI*bouts[i].f*tau)*h*h;
+    }
+    return s;
+  };
+
+  // crest: damped spring driven by head pitch acceleration (follow-through);
+  // simulated over two loops and the second one kept so it is periodic
+  let crest_s = null, dt = 1/480;
+  if (ap.crest){
+    let n = Math.max(2,Math.round(T/dt));
+    let pitch = new Float64Array(n);
+    for (let i = 0; i < n; i++) pitch[i] = head_at(i*T/n)[1];
+    let h = T/n;
+    let w = 2*PI*4, z = 0.35, g = 0.5;
+    let x = 0, v = 0;
+    crest_s = new Float64Array(n);
+    for (let loop = 0; loop < 2; loop++){
+      for (let i = 0; i < n; i++){
+        let acc = (pitch[(i+1)%n]-2*pitch[i]+pitch[(i-1+n)%n])/(h*h);
+        v += (-w*w*x - 2*z*w*v - g*acc)*h;
+        x += v*h;
+        if (loop == 1) crest_s[i] = clamp(x,-0.3,0.3);
+      }
+    }
+  }
+  let crest_at = t=>{
+    if (!crest_s) return 0;
+    let n = crest_s.length, fi = t/T*n, i0 = Math.floor(fi)%n, f = fi-Math.floor(fi);
+    return lerp(crest_s[i0],crest_s[(i0+1)%n],f);
+  };
+
+  let pose_at = t=>{
+    t = wrap(t);
+    let ph = (t*nb/T + ap.breath_phase)%1;
+    let b = ph < 0.45 ? (1-Math.cos(PI*ph/0.45))/2 : (1+Math.cos(PI*(ph-0.45)/0.55))/2;
+    let [yaw,pitch,roll] = head_at(t);
+    let nict = 0, lid = 0;
+    for (let i = 0; i < blinks.length; i++){
+      let v = blink_shape(blinks[i],t);
+      if (!v) continue;
+      if (blinks[i].kind == 'nict') nict = Math.max(nict,v);
+      else lid = Math.max(lid,v);
+    }
+    let lid_upper = ap.lid_upper;
+    let [tail,spread] = tail_at(t);
+    return {
+      breath: ap.breath_amp*b, yaw, pitch, roll,
+      crest: crest_at(t), tail, spread, teeter: teeter_at(t),
+      nict, lid: ap.lid_rest + (1-ap.lid_rest)*lid, lid_upper,
+    };
+  };
+  return {T, pose_at, segs, blinks, tails, bouts, breaths:nb};
+}
+
+// Builds everything for one seed: the drawing RNG path is identical to
+// main(seed); animation randomness comes from separate streams.
+function animator(seed,opts={}){
+  jsr = str_to_seed(seed);
+  perlin = null;
+  let arg = generate_params();
+  let rig = build_rig(arg);
+  let A = anim_rig(rig);
+  let T = opts.duration || 6;
+  let ap = anim_params(arg,seed,opts.intensity === undefined ? 0.7 : opts.intensity);
+  let tl = make_timeline(ap,T,seed);
+  let rest = rest_pose(ap);
+  let bb = get_bbox(render_world(A,Object.assign({},rest,{lid:0})).flat());
+  if (arg.facing) bb.x = -(bb.x+bb.w);
+  let mg = opts.margin === undefined ? 0.04 : opts.margin;
+  bb = {x:bb.x-bb.w*mg/2, y:bb.y-bb.h*mg/2, w:bb.w*(1+mg), h:bb.h*(1+mg)};
+  A.fit = frame_fit(bb,20,true);
+  A.caption = caption_lines(seed+'.',20);
+  return {
+    seed, arg, ap, T, A, timeline:tl,
+    pose_at: t=>tl.pose_at(t),
+    rest_pose: ()=>Object.assign({},rest),
+    frame: t=>render_exact(A,tl.pose_at(t)),
+    frame_pose: pose=>render_exact(A,pose),
+    ops: t=>render_ops(A,tl.pose_at(t)),
+    ops_pose: pose=>render_ops(A,pose),
+    frames: fps=>{
+      let n = Math.max(1,Math.round(T*fps));
+      let o = [];
+      for (let i = 0; i < n; i++) o.push(render_exact(A,tl.pose_at(i*T/n)));
+      return o;
+    },
+  };
+}
+
+// ===== idle animation: output =====
+
+// Flipbook SVG. Coordinates are quantised to 0.1 units; every polyline is
+// emitted once per maximal run of consecutive frames it appears in, and runs
+// sharing the same frame span go into one <path> whose visibility is switched
+// by discrete SMIL. Lines present in every frame need no animation at all.
+function draw_svg_flipbook(frames,T,W=FRAME_W,H=FRAME_H){
+  let N = frames.length;
+  let q = l=>l.map(p=>[Math.round((p[0]+10)*10), Math.round((p[1]+10)*10)]);
+  let key = l=>l.map(p=>p[0]+' '+p[1]).join(' ');
+  let fmt = v=>String(v/10);
+  let dpath = l=>{
+    let s = `M${fmt(l[0][0])} ${fmt(l[0][1])}l`;
+    for (let j = 1; j < l.length; j++){
+      let dx = l[j][0]-l[j-1][0], dy = l[j][1]-l[j-1][1];
+      s += (j > 1 ? ' ' : '') + fmt(dx) + ' ' + fmt(dy);
+    }
+    return s;
+  };
+  let pres = new Map();
+  for (let i = 0; i < N; i++){
+    for (let j = 0; j < frames[i].length; j++){
+      let l = q(frames[i][j]);
+      if (l.length < 2) continue;
+      let k = key(l);
+      let e = pres.get(k);
+      if (!e){ e = {l, fr:[]}; pres.set(k,e); }
+      if (e.fr[e.fr.length-1] !== i) e.fr.push(i);
+    }
+  }
+  let spans = new Map();
+  let put = (a,b,l)=>{
+    let k = (a == 0 && b == N-1) ? 'all' : a+'-'+b;
+    if (!spans.has(k)) spans.set(k,{a,b,d:[]});
+    spans.get(k).d.push(dpath(l));
+  };
+  pres.forEach(e=>{
+    let a = e.fr[0], p = a;
+    for (let j = 1; j < e.fr.length; j++){
+      if (e.fr[j] != p+1){ put(a,p,e.l); a = e.fr[j]; }
+      p = e.fr[j];
+    }
+    put(a,p,e.l);
+  });
+  let kt = v=>+(v).toFixed(6);
+  let o = `<svg xmlns="http://www.w3.org/2000/svg" width="${W+20}" height="${H+20}">`;
+  o += `<rect x="0" y="0" width="${W+20}" height="${H+20}" fill="floralwhite"/><rect x="10" y="10" width="${W}" height="${H}" stroke="black" stroke-width="1" fill="none"/>`;
+  o += `<g stroke="black" stroke-width="1" fill="none" stroke-linecap="round" stroke-linejoin="round">`;
+  spans.forEach((s,k)=>{
+    if (k == 'all'){
+      o += `\n<path d="${s.d.join('')}"/>`;
+      return;
+    }
+    let v = [], t = [];
+    if (s.a > 0){ v.push('hidden'); t.push(0); }
+    v.push('visible'); t.push(kt(s.a/N));
+    if (s.b < N-1){ v.push('hidden'); t.push(kt((s.b+1)/N)); }
+    o += `\n<path visibility="${s.a == 0 ? 'visible' : 'hidden'}" d="${s.d.join('')}"><animate attributeName="visibility" calcMode="discrete" values="${v.join(';')}" keyTimes="${t.join(';')}" dur="${T}s" repeatCount="indefinite"/></path>`;
+  });
+  o += `\n</g></svg>`;
+  return o;
+}
+
+// Antialiased rasteriser for polylines or painter ops (fill = paper).
+// Returns ink coverage 0..1 per pixel, including the 10-unit border like draw_svg.
+function raster(src,W=FRAME_W,H=FRAME_H,scale=1,lw=1){
+  let cw = Math.round((W+20)*scale), ch = Math.round((H+20)*scale);
+  let ink = new Float32Array(cw*ch);
+  let rad = lw*scale/2;
+  let X = x=>(x+10)*scale, Y = y=>(y+10)*scale;
+  let seg = (x0,y0,x1,y1)=>{
+    let xa = Math.max(0,Math.floor(Math.min(x0,x1)-rad-1)), xb = Math.min(cw-1,Math.ceil(Math.max(x0,x1)+rad+1));
+    let ya = Math.max(0,Math.floor(Math.min(y0,y1)-rad-1)), yb = Math.min(ch-1,Math.ceil(Math.max(y0,y1)+rad+1));
+    let dx = x1-x0, dy = y1-y0, ll = dx*dx+dy*dy;
+    for (let py = ya; py <= yb; py++){
+      for (let px = xa; px <= xb; px++){
+        let cx = px+0.5, cy = py+0.5;
+        let t = ll ? clamp(((cx-x0)*dx+(cy-y0)*dy)/ll,0,1) : 0;
+        let ex = x0+dx*t-cx, ey = y0+dy*t-cy;
+        let cov = rad+0.5-Math.sqrt(ex*ex+ey*ey);
+        if (cov <= 0) continue;
+        let i = py*cw+px;
+        if (cov > ink[i]) ink[i] = Math.min(1,cov);
+      }
+    }
+  };
+  let stroke = ls=>{
+    for (let i = 0; i < ls.length; i++){
+      let l = ls[i];
+      for (let j = 1; j < l.length; j++) seg(X(l[j-1][0]),Y(l[j-1][1]),X(l[j][0]),Y(l[j][1]));
+    }
+  };
+  let fill = poly=>{
+    let pts = poly.map(p=>[X(p[0]),Y(p[1])]);
+    let b = get_bbox(pts);
+    let ya = Math.max(0,Math.floor(b.y)), yb = Math.min(ch-1,Math.ceil(b.y+b.h));
+    for (let py = ya; py <= yb; py++){
+      let cy = py+0.5, xs = [];
+      for (let i = 0, j = pts.length-1; i < pts.length; j = i++){
+        let [xi,yi] = pts[i], [xj,yj] = pts[j];
+        if ((yi > cy) != (yj > cy)) xs.push(xi+(cy-yi)*(xj-xi)/(yj-yi));
+      }
+      xs.sort((a,b)=>a-b);
+      for (let k = 0; k+1 < xs.length; k += 2){
+        let xa = Math.max(0,Math.ceil(xs[k]-0.5)), xb = Math.min(cw-1,Math.floor(xs[k+1]-0.5));
+        for (let px = xa; px <= xb; px++) ink[py*cw+px] = 0;
+      }
+    }
+  };
+  stroke([[[0,0],[W,0],[W,H],[0,H],[0,0]]]);
+  if (src.length && !Array.isArray(src[0])){
+    for (let i = 0; i < src.length; i++){
+      if (src[i].fill) src[i].fill.forEach(fill);
+      if (src[i].stroke) stroke(src[i].stroke);
+    }
+  }else{
+    stroke(src);
+  }
+  return {w:cw, h:ch, ink};
+}
+
+// Animated GIF89a (16 levels from floralwhite to black, LZW, infinite loop).
+function gif_encode(frames,w,h,delay_cs){
+  let out = [];
+  let u16 = v=>out.push(v&255,(v>>8)&255);
+  let str = s=>{ for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i)); };
+  str('GIF89a');
+  u16(w); u16(h);
+  out.push(0xF3,0,0);
+  for (let i = 0; i < 16; i++){
+    let t = 1-i/15;
+    out.push(Math.round(255*t),Math.round(250*t),Math.round(240*t));
+  }
+  out.push(0x21,0xFF,0x0B);
+  str('NETSCAPE2.0');
+  out.push(3,1,0,0,0);
+  let idx = new Uint8Array(w*h);
+  for (let f = 0; f < frames.length; f++){
+    out.push(0x21,0xF9,4,0);
+    u16(delay_cs);
+    out.push(0,0);
+    out.push(0x2C);
+    u16(0); u16(0); u16(w); u16(h);
+    out.push(0);
+    let ink = frames[f];
+    for (let i = 0; i < w*h; i++) idx[i] = Math.round(clamp(ink[i],0,1)*15);
+    gif_lzw(idx,4,out);
+  }
+  out.push(0x3B);
+  return new Uint8Array(out);
+}
+
+function gif_lzw(idx,mcs,out){
+  out.push(mcs);
+  let clear = 1<<mcs, eoi = clear+1;
+  let size = mcs+1, next = eoi+1;
+  let dict = new Map();
+  let buf = 0, nb = 0, block = [];
+  let flush = ()=>{
+    out.push(block.length);
+    for (let i = 0; i < block.length; i++) out.push(block[i]);
+    block = [];
+  };
+  let emit = code=>{
+    buf |= code << nb;
+    nb += size;
+    while (nb >= 8){
+      block.push(buf & 255);
+      buf >>>= 8;
+      nb -= 8;
+      if (block.length == 255) flush();
+    }
+  };
+  emit(clear);
+  let prefix = idx[0];
+  for (let i = 1; i < idx.length; i++){
+    let k = idx[i];
+    let key = prefix*256+k;
+    let v = dict.get(key);
+    if (v !== undefined){
+      prefix = v;
+      continue;
+    }
+    emit(prefix);
+    if (next == 4096){
+      emit(clear);
+      dict.clear();
+      size = mcs+1;
+      next = eoi+1;
+    }else{
+      if (next >= (1<<size)) size++;
+      dict.set(key,next++);
+    }
+    prefix = k;
+  }
+  emit(prefix);
+  emit(eoi);
+  if (nb > 0) block.push(buf & 255);
+  if (block.length) flush();
+  out.push(0);
+}
+
+function anim_gif(an,fps=20,scale=1){
+  let n = Math.max(1,Math.round(an.T*fps));
+  let frames = [], w = 0, h = 0;
+  for (let i = 0; i < n; i++){
+    let r = raster(an.frame(i*an.T/n),FRAME_W,FRAME_H,scale);
+    w = r.w; h = r.h;
+    frames.push(r.ink);
+  }
+  return gif_encode(frames,w,h,Math.round(100/fps));
+}
+
 function main(seed){
   if (seed === undefined){
     jsr = ~~(Math.random()*10000);
@@ -2491,9 +3574,12 @@ function seed_name(s){
 
 if (typeof module != "undefined"){
   module.exports = {
-    main, bird, generate_params, default_params, ARCHETYPES,
+    main, bird, build_rig, render_static, generate_params, default_params, ARCHETYPES,
+    animator, anim_rig, anim_params, make_timeline, rest_pose, render_exact, render_ops, render_world,
+    breath_disp, frame_fit, apply_fit, TEMPERAMENT,
+    draw_svg_flipbook, raster, gif_encode, anim_gif,
     reframe, cleanup, draw_svg, draw_svg_anim, draw_ps, binomen, seed_name, str_to_seed,
-    FRAME_W, FRAME_H,
+    get_bbox, FRAME_W, FRAME_H,
   };
   if (require.main === module){
     let seed = undefined;
@@ -2509,6 +3595,33 @@ if (typeof module != "undefined"){
         if (process.argv[i+1] > 0) speed = speed / process.argv[i+1];
       }
     }
+    let num = (name,def)=>{
+      let i = process.argv.indexOf('--'+name);
+      return i >= 0 ? Number(process.argv[i+1]) : def;
+    };
+    if (format == 'anim' || format == 'gif' || format == 'frames'){
+      if (seed === undefined){
+        jsr = ~~(Math.random()*10000);
+        seed = binomen();
+      }
+      let fps = num('fps',format == 'gif' ? 20 : 12);
+      let an = animator(seed,{duration:num('duration',6), intensity:num('intensity',0.7)});
+      let oi = process.argv.indexOf('--out');
+      let out = oi >= 0 ? process.argv[oi+1] : null;
+      let fs = require('fs');
+      if (format == 'anim'){
+        let svg = draw_svg_flipbook(an.frames(fps),an.T);
+        if (out) fs.writeFileSync(out,svg); else process.stdout.write(svg);
+      }else if (format == 'gif'){
+        let gif = Buffer.from(anim_gif(an,fps,num('scale',1)));
+        if (out) fs.writeFileSync(out,gif); else process.stdout.write(gif);
+      }else{
+        let dir = out || (seed.replace(/[^A-Za-z0-9]+/g,'_')+'_frames');
+        fs.mkdirSync(dir,{recursive:true});
+        an.frames(fps).forEach((f,i)=>fs.writeFileSync(`${dir}/frame_${String(i).padStart(4,'0')}.svg`,draw_svg(f)));
+        console.log(dir);
+      }
+    }else{
     let polylines = main(seed);
     if (format == 'svg'){
       console.log(draw_svg(polylines));
@@ -2520,6 +3633,7 @@ if (typeof module != "undefined"){
       console.log(polylines.map(x=>x.flat().join(',')).join('\n'));
     }else if (format == 'ps'){
       console.log(draw_ps(polylines));
+    }
     }
   }
 }

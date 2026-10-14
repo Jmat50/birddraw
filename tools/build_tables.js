@@ -10,6 +10,8 @@
 // generator uses (Kipp's distance / wing length == the `kipp` parameter).
 // The hand-tuned centres in birddraw.js were seeded from these ratios; the
 // JSON can be pasted back over ARCHETYPES[*].n to refresh them.
+// `mass_g` (median body mass) feeds TEMPERAMENT[*].mass, which sets the idle
+// animation's resting breathing rate (17.2 M^-0.31 breaths/min).
 
 const fs = require('fs');
 
@@ -89,7 +91,7 @@ function main(){
         kipp: kipps / wing,
       };
     });
-    let s = {species: sp.length};
+    let s = {species: sp.length, mass: median(sp.map(r => col(r, 'Mass', 'Mass.g')))};
     for (let k of ['beak_len', 'beak_depth', 'tarsus_ratio', 'wing_ratio', 'tail_ratio', 'kipp']){
       s[k] = median(ratios.map(x => x[k]));
     }
@@ -102,6 +104,7 @@ function main(){
     let s = stats[arch];
     out[arch] = {
       species: s.species,
+      mass_g: Math.round(s.mass),
       relative_to_finch: {
         beak_len: +(s.beak_len / ref.beak_len).toFixed(3),
         beak_depth: +(s.beak_depth / ref.beak_depth).toFixed(3),

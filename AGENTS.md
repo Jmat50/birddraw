@@ -1,0 +1,24 @@
+# AGENTS.md
+
+Procedural perched-bird line drawings for pen plotters, adapted from fishdraw, with an optional idle animation.
+
+## Layout
+- `birddraw.js`: everything (single file, zero dependencies, runs in Node and as a browser `<script>`). Sections: vendored fishdraw kernel → bird parts → `build_rig`/`render_static` → output (`reframe`, `draw_svg`…) → idle animation (`anim_rig`, `anim_maps`, `make_timeline`, `animator`, flipbook/raster/GIF) → `module.exports` + CLI.
+- `index.html`: browser demo (static, draw-on, live "alive" canvas, exports).
+- `tools/`: `gallery.js` (static + `--anim`), `frames.js` (PNG/GIF/SVG frames), `build_tables.js`/`build_names.js` (AVONET/AviList derivation).
+- `test/`: `determinism.js`, `static_golden.js` + `golden.json`, `animation.js`.
+- `docs/research.md` (generator design), `docs/animation.md` (animation anatomy, maths, sources).
+- `vendor/`: original fishdraw + licence; do not edit.
+
+## Rules
+- No dependencies, no build step. Keep `birddraw.js` loadable as a plain browser script: no top-level `return`, guard Node-only code behind `typeof module != "undefined"`.
+- Static output must stay byte-identical: never add, remove or reorder global `rand()`/`jsr` calls in the drawing path. If a static change is intentional, re-record with `npm run test:golden:record` and say so in the commit.
+- Animation randomness uses local streams only (`make_rng(seed+'#anim')`, `seed+'#timeline'`). Don't regenerate geometry or re-sample noise per frame; only transform cached lines (prevents shimmer).
+- Loops must stay seamless: any new time signal must be periodic in `T` (`t mod T`, wrapped kernels).
+- Match the existing terse style (2-space indent, short names, sparse comments).
+
+## Commands
+- `npm test`: determinism (50 seeds), static golden hashes, animation checks (determinism, seamless loop, Jacobian, rest≈static, painter≈exact, perf budgets). Run before committing.
+- `npm run gallery` / `npm run anim`: sample renders into `samples/`.
+- `node birddraw.js --seed "X" --format svg|json|smil|csv|ps|anim|gif|frames [--out path] [--fps] [--duration] [--intensity]`.
+- On Windows PowerShell 5, `>` writes UTF-16; use `--out` or `Out-File -Encoding utf8`.

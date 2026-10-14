@@ -5,48 +5,148 @@
 <title>birddraw</title>
 <style>
   body{font-family:sans-serif;background:#eee;margin:0;padding:20px;display:flex;flex-direction:column;align-items:center}
-  #bar{display:flex;gap:6px;margin-bottom:12px;align-items:center}
+  .bar{display:flex;gap:6px;margin-bottom:8px;align-items:center;flex-wrap:wrap;justify-content:center;font-size:13px}
   #seed{width:260px;padding:4px}
-  #out svg{background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.2);width:min(92vw,690px);height:auto}
+  #out svg,#cv{background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.2);width:min(92vw,690px);height:auto;display:block}
   #info{font-size:12px;color:#666;margin-top:8px}
+  #intensity{width:90px}
+  #dur{width:44px}
 </style>
 </head>
 <body>
-<div id="bar">
+<div class="bar">
   <input id="seed" placeholder="seed (any text)">
   <button id="draw">draw</button>
   <button id="rand">random</button>
   <button id="svg">download svg</button>
-  <label><input id="anim" type="checkbox"> animate</label>
+  <label><input id="drawon" type="checkbox"> draw-on</label>
+</div>
+<div class="bar">
+  <label><input id="alive" type="checkbox"> alive</label>
+  <label>intensity <input id="intensity" type="range" min="0" max="1" step="0.05" value="0.7"></label>
+  <label>loop <input id="dur" type="number" min="2" max="20" step="1" value="6"> s</label>
+  <label title="render with exact hidden-line clipping (what a plotter would draw)"><input id="exact" type="checkbox"> exact</label>
+  <button id="flip">download animated svg</button>
+  <button id="gif">download gif</button>
 </div>
 <div id="out"></div>
+<canvas id="cv" style="display:none"></canvas>
 <div id="info"></div>
 <script src="birddraw.js"></script>
 <script>
+let $ = id => document.getElementById(id);
 let current = null;
+let live = null;
+let raf = 0;
+
+function fname(ext){
+  return current.seed.replace(/[^A-Za-z0-9]+/g, '_') + ext;
+}
+function download(blob, name){
+  let a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+}
+
 function render(seed){
   let t0 = performance.now();
   let polylines = main(seed);
   let ms = Math.round(performance.now() - t0);
-  let anim = document.getElementById('anim').checked;
   current = {seed, svg: draw_svg(polylines)};
-  document.getElementById('out').innerHTML = anim ? draw_svg_anim(polylines, 0.005) : current.svg;
-  document.getElementById('seed').value = seed;
-  document.getElementById('info').textContent = `${polylines.length} polylines, ${ms} ms`;
+  $('out').innerHTML = $('drawon').checked ? draw_svg_anim(polylines, 0.005) : current.svg;
+  $('seed').value = seed;
+  $('info').textContent = `${polylines.length} polylines, ${ms} ms`;
   location.hash = encodeURIComponent(seed);
+  live = null;
+  update_alive();
 }
+
+function build_live(){
+  let t0 = performance.now();
+  live = animator(current.seed, {duration: Number($('dur').value) || 6, intensity: Number($('intensity').value)});
+  live.t0 = performance.now();
+  let ap = live.ap, tl = live.timeline;
+  $('info').textContent = `alive: ${live.arg.archetype}, rig ${Math.round(performance.now()-t0)} ms; ` +
+    `breathing ${(ap.breath_f*60).toFixed(0)}/min, ${tl.segs.length} head moves (${ap.style}), ` +
+    `${tl.blinks.length} blinks, tail ${ap.tail_style}`;
+}
+
+function draw_frame(now){
+  let cv = $('cv');
+  let dpr = window.devicePixelRatio || 1;
+  let W = FRAME_W + 20, H = FRAME_H + 20;
+  let cssw = cv.clientWidth || W;
+  let k = cssw / W * dpr;
+  if (cv.width != Math.round(W*k)){ cv.width = Math.round(W*k); cv.height = Math.round(H*k); }
+  let ctx = cv.getContext('2d');
+  ctx.setTransform(k, 0, 0, k, 0, 0);
+  ctx.fillStyle = 'floralwhite';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'black';
+  ctx.lineWidth = 1;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeRect(10, 10, FRAME_W, FRAME_H);
+  ctx.translate(10, 10);
+  let t = ((now - live.t0) / 1000) % live.T;
+  let path = ls => {
+    let p = new Path2D();
+    for (let l of ls){
+      p.moveTo(l[0][0], l[0][1]);
+      for (let j = 1; j < l.length; j++) p.lineTo(l[j][0], l[j][1]);
+    }
+    return p;
+  };
+  if ($('exact').checked){
+    ctx.stroke(path(live.frame(t)));
+  }else{
+    for (let op of live.ops(t)){
+      if (op.fill){
+        ctx.fillStyle = 'floralwhite';
+        for (let poly of op.fill){
+          let p = path([poly]);
+          p.closePath();
+          ctx.fill(p);
+        }
+      }else{
+        ctx.stroke(path(op.stroke));
+      }
+    }
+  }
+  raf = requestAnimationFrame(draw_frame);
+}
+
+function update_alive(){
+  cancelAnimationFrame(raf);
+  let on = $('alive').checked && current;
+  $('cv').style.display = on ? 'block' : 'none';
+  $('out').style.display = on ? 'none' : 'block';
+  if (!on) return;
+  if (!live) build_live();
+  raf = requestAnimationFrame(draw_frame);
+}
+
 function random_seed(){
   return seed_name(String(Math.random()));
 }
-document.getElementById('draw').onclick = () => render(document.getElementById('seed').value || random_seed());
-document.getElementById('rand').onclick = () => render(random_seed());
-document.getElementById('seed').onkeydown = e => { if (e.key == 'Enter') document.getElementById('draw').onclick(); };
-document.getElementById('svg').onclick = () => {
+$('draw').onclick = () => render($('seed').value || random_seed());
+$('rand').onclick = () => render(random_seed());
+$('seed').onkeydown = e => { if (e.key == 'Enter') $('draw').onclick(); };
+$('drawon').onchange = () => render(current.seed);
+$('alive').onchange = update_alive;
+$('intensity').onchange = () => { live = null; update_alive(); };
+$('dur').onchange = () => { live = null; update_alive(); };
+$('svg').onclick = () => { if (current) download(new Blob([current.svg], {type: 'image/svg+xml'}), fname('.svg')); };
+$('flip').onclick = () => {
   if (!current) return;
-  let a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([current.svg], {type: 'image/svg+xml'}));
-  a.download = current.seed.replace(/[^A-Za-z0-9]+/g, '_') + '.svg';
-  a.click();
+  if (!live) build_live();
+  download(new Blob([draw_svg_flipbook(live.frames(12), live.T)], {type: 'image/svg+xml'}), fname('_alive.svg'));
+};
+$('gif').onclick = () => {
+  if (!current) return;
+  if (!live) build_live();
+  download(new Blob([anim_gif(live, 20, 1)], {type: 'image/gif'}), fname('_alive.gif'));
 };
 render(location.hash ? decodeURIComponent(location.hash.slice(1)) : random_seed());
 </script>
