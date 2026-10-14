@@ -3,6 +3,10 @@
 //
 //   node tools/frames.js "Turdus merula" [--out dir] [--fps 12] [--duration 6]
 //        [--intensity 0.7] [--scale 1] [--no-png] [--strip 8]
+//        [--moves head,blink | +wing,-tail | all | none]
+//
+// Movements: breath, head, blink, tail (incl. teeter), crest; off by default:
+// wing (wing flicks), flap (full wingbeats with a hop off the perch).
 //
 // Every SVG frame is an exact hidden-line drawing, so the frames can also be
 // plotted as a flipbook. For MP4:
@@ -64,7 +68,7 @@ function png(ink, w, h){
 }
 
 let t0 = Date.now();
-let an = bd.animator(seed, {duration, intensity});
+let an = bd.animator(seed, {duration, intensity, moves: bd.parse_moves(opt('moves', ''))});
 let n = Math.max(1, Math.round(an.T*fps));
 let frames = [], rasters = [];
 for (let i = 0; i < n; i++){
@@ -94,4 +98,7 @@ if (strip > 0){
 let p = an.ap, tl = an.timeline;
 console.log(`${seed} [${an.arg.archetype}] ${n} frames in ${Date.now()-t0} ms -> ${out}`);
 console.log(`  breathing ${tl.breaths} cycles/${an.T}s (${(p.breath_f*60).toFixed(0)}/min at ${p.mass.toFixed(0)} g), ` +
-  `${tl.segs.length} head moves (${p.style}), ${tl.blinks.length} blinks, tail ${p.tail_style}`);
+  `${tl.segs.length} head moves (${p.style}), ${tl.blinks.length} blinks, tail ${p.tail_style}, ${tl.flicks.length} wing flick bouts` +
+  (tl.flap ? `, flap of ${tl.flap.nb} beats at ${tl.flap.fb.toFixed(1)} Hz` : ''));
+let off = Object.keys(tl.moves).filter(k => !tl.moves[k]);
+if (off.length) console.log(`  off: ${off.join(', ')}`);

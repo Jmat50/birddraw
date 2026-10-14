@@ -72,6 +72,36 @@ Each rectrix rotates by `tau + i × 0.045 × spread`, so the fan opens slightly 
 
 **Teetering** waders, such as the Spotted Sandpiper, bob the whole rear body. This is a small pitch of the body, wing, tail and head about the hip, with the legs and perch fixed. It comes in bouts of a 2–4 Hz sinusoid under a Hann envelope.
 
+### Wing flicks (optional)
+
+Many small birds briefly flick the folded wing; kinglets and flycatchers do it constantly. The wing stays folded and rigid. It rotates about the shoulder so the tip lifts clear of the tail (up to about 9° at full intensity) and drops back, in bouts of 1–3 flicks at 5–7.5 Hz with a \(\sin^2\) profile. Each archetype has its own rate (`wflick`), and the flicks come from a separate random stream (`seed#wing`), so turning them on leaves every other channel unchanged.
+
+### Wing flaps (optional)
+
+A flap is a short takeoff: the bird crouches, spreads its wings, beats them a few times to lift off the perch, then lands and folds.
+
+The static drawing only has a folded wing, so the flap uses a separate, **articulated** open wing:
+- **Skeleton:** three bones (humerus, ulna, manus), with lengths 0.22, 0.30 and 0.18 of the folded wing length.
+- **Joints:** their angles interpolate between the folded Z-shape and the spread wing with an extension `e` in [0, 1].
+- **Feathers:** every feather is a rigid shape from the same `feather()` primitive and style rules as the folded wing.
+  - Primaries attach to the manus and fan from pointing backward (inner) to nearly spanwise (outer).
+  - Secondaries hang off the ulna.
+  - Tertials sit on the humerus.
+  - Lesser, median, greater and primary coverts are laid on top in rows, with the feather nearer the body on top, as on a real wing.
+- **Stroke:** the planform (span `u`, chord `v`) is projected through the stroke angle \(\varphi\): the span vector is \(\sin\varphi\) times a stroke plane leaning 15° back, so at the top of the stroke the wing reaches up and back and at the bottom it sweeps down and forward. With orthographic projection the wing goes edge-on as it passes horizontal, and the far wing lines up exactly behind the near one.
+- **Wrist flexion:** in small birds the downstroke is fully extended and the upstroke flexes the wrist to cut drag, so \(e = 1 - 0.35\max(0, -\sin\psi)\) over the beat phase \(\psi\).
+
+Timing of one flap:
+1. **Crouch and spread** (0.18 s): the body dips by 4% of its length while the wing opens and rises to the top of the stroke.
+2. **2–4 beats:** \(\varphi = 15° + 60°\cos\psi\), from 75° down to −45°. The hop height follows a minimum-jerk rise and fall that peaks at about 0.34 body lengths at default intensity. The body pitches nose-up by up to 8° about the hip. The feet leave the perch with the body, but stay planted during the crouch and landing so they never sink into the branch.
+3. **Land and fold** (0.25 s): the wing folds back to the static folded drawing and the body absorbs the landing with a 3% dip.
+
+**Beat rate.** Real takeoff wingbeats are 10–25 Hz in small birds, which would alias badly at 12–20 fps. The beat is slowed to \(5\,(M/20\,\text{g})^{-0.15}\) Hz, clamped to 2.5–5 Hz, so it still reads as a wingbeat and larger birds still beat more slowly.
+
+**Framing.** The fixed framing covers the whole flap (wings at both ends of the stroke at full height), so the bird is drawn about 15–30% smaller when flaps are on.
+
+**Occlusion.** During a flap the folded wing is hidden and the open wing is drawn in front of everything. The body plumage that was always generated under the folded wing shows through. The legs move to their own motion group and are clipped against the perch every frame.
+
 ### Follow-through
 
 The crest lags head motion. It is a damped spring driven by the head's angular acceleration (Lasseter 1987, "secondary action"):
@@ -189,6 +219,7 @@ The tests check that `frame(0)` and `frame(T)` are identical and that every pose
 | `duration` (s, default 6) | `{duration}`, `--duration`, loop field | loop length; breathing snaps to it |
 | `TEMPERAMENT[archetype]` | `birddraw.js` | mass, saccade rate and spread, blink rate and coupling, tail style weights, rate and amplitude |
 | breath amplitude 0.025 | `anim_params` | belly excursion as a fraction of body depth |
+| `moves` | `{moves}`, `--moves`, checkboxes | `breath`, `head`, `blink`, `tail` (with teeter), `crest` on by default; `wing` (flicks) and `flap` off |
 
 Blended archetypes ("thrush+") interpolate numeric temperament values by the blend weight, and pick categorical ones (head style, lid, tail style) from one parent.
 

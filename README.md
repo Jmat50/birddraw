@@ -36,6 +36,15 @@ Any seed can be brought to life with subtle, anatomically grounded idle motion:
 - **blinks:** nictitating-membrane blinks coupled to saccades; owls use the upper lid
 - **tail:** pumps and flicks; some waders teeter
 - **crest:** follows through after head movements
+- **wing flicks** (off by default): the folded wing lifts at the tip in quick bursts
+- **wing flaps** (off by default): the bird spreads its wings and beats them a few times, hops into the air, then lands and folds them
+
+Each movement can be switched on or off: use the "movements" checkboxes in `index.html`, `--moves` on the command line, or `animator(seed, {moves: {flap: true, tail: false}})` in code. `--moves` takes:
+- a list such as `head,blink`, which turns on only those movements
+- changes to the defaults, such as `+wing,+flap,-tail`
+- `all` or `none`
+
+The movement names are `breath`, `head`, `blink`, `tail`, `crest`, `wing` and `flap`.
 
 The loop is seamless, and every frame is still plain polylines, so it can be plotted. `main(seed)` is unaffected.
 
@@ -43,7 +52,7 @@ The loop is seamless, and every frame is still plain polylines, so it can be plo
 node birddraw.js --seed "Turdus merula" --format anim > alive.svg          # self-contained animated SVG
 node birddraw.js --seed "Turdus merula" --format gif --out alive.gif       # looping GIF
 node birddraw.js --seed "Turdus merula" --format frames --out frames/      # one SVG per frame
-  options: --fps 12  --duration 6  --intensity 0.7  --scale 1 (gif)
+  options: --fps 12  --duration 6  --intensity 0.7  --scale 1 (gif)  --moves +flap
 node tools/frames.js "Turdus merula" --fps 12 --strip 8                    # SVG + PNG frames, GIF, flipbook, contact strip
 ```
 

@@ -2715,26 +2715,30 @@ function map_cull(lines,f){
 
 let MASK_STEP = {static:0, wing:0, tail:0, body:3, head:2, crest:2};
 
-function anim_rig(rig){
+function anim_rig(rig,opts={}){
   let m = rig.meta, L = rig.legacy;
   let P = (name,group,p)=>({name, group, lines:p.lines, masks:p.masks});
-  let parts = [
-    P('near_front','static',L[0]),
+  // with flaps the legs leave the perch, so they need their own group
+  let lg = opts.flap ? 'legs' : 'static';
+  let parts = [];
+  if (opts.flap) parts.push(P('wing_open','wing_open',{lines:[], masks:[]}));
+  parts.push(
+    P('near_front',lg,L[0]),
     P('beak','head',L[1]),
     P('eye','head',L[2]),
     P('head','head',{lines:L[3].lines.slice(m.n_seam,m.n_end), masks:[m.hp]}),
-  ];
+  );
   if (m.crest) parts.push(P('crest','crest',{lines:m.crest.lines, masks:[m.crest.poly]}));
   parts.push(
     P('wing','wing',L[4]),
     P('body','body',L[5]),
-    P('near_tarsus','static',L[6]),
+    P('near_tarsus',lg,L[6]),
     P('perch','static',L[7]),
-    P('near_hallux','static',L[8]),
+    P('near_hallux',lg,L[8]),
     P('tail','tail',{lines:[], masks:[]}),
-    P('far_tarsus','static',L[10]),
-    P('far_front','static',L[11]),
-    P('far_hallux','static',L[12]),
+    P('far_tarsus',lg,L[10]),
+    P('far_front',lg,L[11]),
+    P('far_hallux',lg,L[12]),
   );
   for (let i = 0; i < parts.length; i++){
     let p = parts[i];
@@ -2765,11 +2769,96 @@ function anim_rig(rig){
   for (let i = 0; i < parts.length; i++){
     parts[i].cand = [];
     for (let j = 0; j < i; j++){
-      if (pbb[i] && pbb[j] && bbox_overlap(pbb[i],pbb[j])) parts[i].cand.push(j);
+      // a flap moves parts far from their rest boxes; the occluder's own bbox test still culls
+      if (opts.flap || (pbb[i] && pbb[j] && bbox_overlap(pbb[i],pbb[j]))) parts[i].cand.push(j);
     }
   }
   let body_outline = parts.find(p=>p.name == 'body').masks[0];
-  return {rig, meta:m, arg:rig.arg, parts, tail, body_outline};
+  let wopen = opts.flap ? wing_open_build(rig.arg,m.BL) : null;
+  return {rig, meta:m, arg:rig.arg, parts, tail, body_outline, wopen};
+}
+
+// ===== idle animation: open wing for flaps =====
+// An articulated wing: every feather is a rigid shape attached to the humerus,
+// ulna or manus. Joint angles move between folded (e = 0) and spread (e = 1);
+// in the spread pose the primaries fan from the hand and the secondaries hang
+// off the forearm. The planform (u outward along the span, v back along the
+// chord) is then projected through the stroke angle.
+function wing_open_build(arg,BL){
+  let WL = BL*arg.wing_ratio;
+  let style = arg.wing_style;
+  let flight = {tertial:1, secondary:1, primary:1};
+  let feathers = [];
+  let add = (group,bone,t,len,w,dopen,dfold,fwd,o={})=>{
+    let opt = Object.assign({
+      tip:'round',
+      asym: group == 'primary' ? 0.35 : 0.45,
+      bend: (group == 'primary' ? 0.015 : 0.03) + deviate(0.01),
+      barbs: flight[group] ? arg.barb_density*(group == 'primary' ? 0.3 : 1) : 0,
+      slant: 0.1, n: 14,
+    },o);
+    if (group == 'primary' && arg.emarg) opt.emarg = 0.62;
+    if (style == 'wingbars' && (group == 'greater' || group == 'median')){
+      opt.dark = 1; opt.dark_len = 0.68; opt.dark_w = 0.85;
+    }else if (style == 'dark_centers' && (group == 'tertial' || group == 'greater' || group == 'median')){
+      opt.dark = 1; opt.dark_len = 0.82; opt.dark_w = 0.55;
+    }else if (style == 'dark_flight' && flight[group]){
+      opt.dark = 1; opt.dark_len = 0.95; opt.dark_w = 0.85; opt.dark_step = group == 'primary' ? 4 : 2.4;
+    }else if (style == 'barred' && flight[group]){
+      opt.bars = WL*0.07;
+    }
+    let fe = feather([0,0],[len,0],w,opt);
+    feathers.push({group, bone, t, dopen:dopen*D2R, dfold:dfold*D2R, fwd:fwd*WL, poly:fe.poly, lines:fe.lines});
+  };
+  let np = arg.n_primaries, ns = arg.n_secondaries, nt = arg.n_tertials;
+  let fr = (k,n)=>n > 1 ? k/(n-1) : 0;
+  let Lp = k=>WL*0.72*(0.7+0.3*smoothstep(0,0.75,fr(k,np)))*(fr(k,np) > 0.95 ? 0.95 : 1);
+  let Ls = WL*0.42;
+  let sec_t = k=>1-0.95*fr(k,ns);
+  let sec_d = k=>85+lerp(-12,6,fr(k,ns));
+  let pri_d = k=>10+lerp(80,4,fr(k,np));
+  // front to back; on each row the feather nearer the body lies on top
+  let nl = 10;
+  for (let k = 0; k < nl; k++){
+    let s = k/(nl-1);
+    add('lesser', s < 0.45 ? 0 : 1, s < 0.45 ? 0.15+s/0.45*0.85 : (s-0.45)/0.55, WL*0.13, WL*0.07, 85, 92, 0.07);
+  }
+  for (let k = ns-1; k >= 0; k--) add('median',1,sec_t(k),WL*0.2,WL*0.065,sec_d(k),92,0.045);
+  for (let j = 0; j < 3; j++) add('alula',2,0.05+0.05*j,WL*(0.16+0.03*j),WL*0.035,-5+4*j,93,0.01,{tip:'pointed'});
+  for (let k = ns-1; k >= 0; k--) add('greater',1,sec_t(k),Ls*0.5,WL*0.07,sec_d(k),92,0.02);
+  for (let k = 0; k < np; k++) add('pcov',2,fr(k,np),Lp(k)*0.32,WL*0.05,pri_d(k),93,0.015);
+  for (let j = 0; j < nt; j++) add('tertial',0,lerp(0.6,0.95,fr(j,nt)),WL*0.42,WL*0.09,100-4*j,92,0);
+  for (let k = ns-1; k >= 0; k--) add('secondary',1,sec_t(k),Ls*(0.94+0.06*fr(k,ns)),WL*0.075,sec_d(k),92+0.3*k,0);
+  for (let k = 0; k < np; k++) add('primary',2,fr(k,np),Lp(k),WL*0.08,pri_d(k),94-0.3*k,0,{tip:'pointed'});
+  return {WL, feathers};
+}
+
+// Places every open-wing feather for the pose: skeleton from the extension,
+// then planform -> world through the stroke angle phi (90 deg = straight up).
+// The stroke plane leans back at the top and forward at the bottom, as in takeoff.
+function wing_open_maps(W,m,pose,post){
+  let e = pose.ext, WL = W.WL;
+  let ang = (open,fold)=>lerp(fold,open,e)*D2R;
+  let a = [ang(20,95), ang(-5,-85), ang(10,95)];
+  let L = [0.22*WL, 0.3*WL, 0.18*WL];
+  let J = [[0,0]];
+  for (let i = 0; i < 3; i++) J.push([J[i][0]+L[i]*Math.cos(a[i]), J[i][1]+L[i]*Math.sin(a[i])]);
+  let cth = m.th*0.4;
+  let C = [Math.cos(cth), Math.sin(cth)];
+  let sp = 15*D2R, s = Math.sin(pose.phi);
+  let U = [Math.sin(sp)*s + 0.15*C[0], -Math.cos(sp)*s + 0.15*C[1]];
+  let O = m.shoulder;
+  return k=>{
+    let f = W.feathers[k];
+    let d = lerp(f.dfold,f.dopen,e);
+    let c = Math.cos(d), sn = Math.sin(d);
+    let b = lerp2d(...J[f.bone],...J[f.bone+1],f.t);
+    b = [b[0]-c*f.fwd, b[1]-sn*f.fwd];
+    return p=>{
+      let u = b[0] + p[0]*c - p[1]*sn, v = b[1] + p[0]*sn + p[1]*c;
+      return post([O[0] + u*U[0] + v*C[0], O[1] + u*U[1] + v*C[1]]);
+    };
+  };
 }
 
 // ===== idle animation: motion maps =====
@@ -2856,8 +2945,15 @@ function anim_maps(A,pose){
   let ct = Math.cos(m.th), st = Math.sin(m.th);
   let to_body = p=>[p[0]*ct+p[1]*st, -p[0]*st+p[1]*ct];
   let from_body = q=>[q[0]*ct-q[1]*st, q[0]*st+q[1]*ct];
-  let tee = pose.teeter;
-  let post = tee ? (p=>rot_pt(p,-tee,m.H[0],m.H[1])) : (p=>p);
+  let tee = pose.teeter, hop = pose.hop || 0, tilt = pose.tilt || 0;
+  let post = (tee || hop || tilt) ? (p=>{
+    let q = tee ? rot_pt(p,-tee,m.H[0],m.H[1]) : p;
+    if (tilt) q = rot_pt(q,tilt,m.H[0],m.H[1]);
+    return hop ? [q[0],q[1]-hop] : q;
+  }) : (p=>p);
+  // the feet stay on the perch through the takeoff crouch and landing
+  let lh = Math.max(0,hop);
+  let legs = lh ? (p=>[p[0],p[1]-lh]) : (p=>p);
   let amp = pose.breath;
   let body = p=>{
     if (!amp) return post(p);
@@ -2870,9 +2966,11 @@ function anim_maps(A,pose){
   let dw = from_body(breath_disp(m,[-m.BL*0.05,lerp(tq,bq,0.6)],amp));
   let wa = -0.3*D2R*amp/0.025;
   let S = m.shoulder;
+  // a wing flick lifts the tip (negative rotation raises the tail-ward end)
+  let wl = wa - (pose.wing || 0);
   let wing = p=>{
-    if (!amp) return post(p);
-    let q = rot_pt(p,wa,S[0],S[1]);
+    if (!amp && !wl) return post(p);
+    let q = rot_pt(p,wl,S[0],S[1]);
     return post([q[0]+dw[0]*0.3, q[1]+dw[1]*0.3]);
   };
   let hm = head_map(m,pose);
@@ -2889,7 +2987,8 @@ function anim_maps(A,pose){
       : -pose.tail*(f.kind == 'upper_cov' ? 0.35 : 0.25);
     return a ? (p=>post(rot_pt(p,a,TP[0],TP[1]))) : post;
   };
-  return {static:p=>p, body, wing, head, head_c, sil, crest, crest_c, tail};
+  let wing_open = A.wopen && pose.flap ? wing_open_maps(A.wopen,m,pose,post) : null;
+  return {static:p=>p, legs, body, wing, head, head_c, sil, crest, crest_c, tail, wing_open};
 }
 
 // Eye overlays, built in head-local 2D before the head map.
@@ -2971,7 +3070,22 @@ function anim_frame(A,pose,painter){
     let p = A.parts[i];
     let fr = {name:p.name, group:p.group, cand:p.cand, lines:[], dyn:[], masks:[]};
     let g = p.group;
-    if (g == 'tail'){
+    if (g == 'wing_open' || (p.name == 'wing' && pose.flap)){
+      if (g == 'wing_open' && mp.wing_open){
+        fr.feathers = A.wopen.feathers.map((f,k)=>{
+          let fn = mp.wing_open(k);
+          return {poly:f.poly.map(fn), lines:map_lines(f.lines,fn)};
+        });
+        if (!painter){
+          let occ = new FastOccluder();
+          for (let k = 0; k < fr.feathers.length; k++){
+            fr.lines.push(...occ.clip(fr.feathers[k].lines));
+            occ.add(fr.feathers[k].poly);
+          }
+        }
+        fr.masks = fr.feathers.map(f=>f.poly);
+      }
+    }else if (g == 'tail'){
       fr.feathers = A.tail.map(f=>{
         let fn = mp.tail(f);
         return {poly:f.poly.map(fn), lines:map_lines(f.lines,fn)};
@@ -3071,21 +3185,43 @@ function render_ops(A,pose){
 // per second; yaw/roll/pitch = fixation spread in degrees; style 'pan' = slow
 // smooth owl head turns instead of saccades; blink = spontaneous blinks per
 // second; couple = probability a saccade carries a blink (Yorzinski 2016);
-// tail = tail-motion style weights, trate = events per second, tamp = degrees.
+// tail = tail-motion style weights, trate = events per second, tamp = degrees;
+// wflick = wing-flick bouts per second (kinglets and flycatchers flick often).
 let TEMPERAMENT = {
-  finch:      {mass:25,  sacc:1.4,  yaw:15, roll:12, pitch:8,  blink:0.12, couple:0.4, tail:{flick:2,pump:1,none:1}, trate:0.2,  tamp:10},
-  sparrow:    {mass:30,  sacc:1.2,  yaw:15, roll:12, pitch:8,  blink:0.12, couple:0.4, tail:{flick:2,none:2},        trate:0.2,  tamp:9},
-  warbler:    {mass:10,  sacc:2.0,  yaw:16, roll:12, pitch:8,  blink:0.15, couple:0.4, tail:{flick:3,pump:1},        trate:0.35, tamp:12},
-  thrush:     {mass:80,  sacc:0.6,  yaw:14, roll:20, pitch:10, blink:0.1,  couple:0.45,tail:{flick:2,none:1},        trate:0.15, tamp:9},
-  corvid:     {mass:400, sacc:0.7,  yaw:16, roll:22, pitch:10, blink:0.1,  couple:0.5, tail:{none:2,flick:1},        trate:0.1,  tamp:7},
-  raptor:     {mass:800, sacc:0.25, yaw:20, roll:12, pitch:8,  blink:0.08, couple:0.5, tail:{none:3,flick:1},        trate:0.06, tamp:6},
-  parrot:     {mass:300, sacc:0.4,  yaw:16, roll:25, pitch:10, blink:0.1,  couple:0.4, tail:{none:2,flick:1},        trate:0.08, tamp:6},
-  kingfisher: {mass:40,  sacc:0.4,  yaw:12, roll:10, pitch:8,  blink:0.1,  couple:0.4, tail:{pump:2,flick:1},        trate:0.2,  tamp:10},
-  owl:        {mass:400, sacc:0.15, yaw:35, roll:15, pitch:8,  blink:0.08, couple:0.2, tail:{none:1},                trate:0,    tamp:0,
+  finch:      {mass:25,  sacc:1.4,  yaw:15, roll:12, pitch:8,  blink:0.12, couple:0.4, tail:{flick:2,pump:1,none:1}, trate:0.2,  tamp:10, wflick:0.08},
+  sparrow:    {mass:30,  sacc:1.2,  yaw:15, roll:12, pitch:8,  blink:0.12, couple:0.4, tail:{flick:2,none:2},        trate:0.2,  tamp:9,  wflick:0.08},
+  warbler:    {mass:10,  sacc:2.0,  yaw:16, roll:12, pitch:8,  blink:0.15, couple:0.4, tail:{flick:3,pump:1},        trate:0.35, tamp:12, wflick:0.3},
+  thrush:     {mass:80,  sacc:0.6,  yaw:14, roll:20, pitch:10, blink:0.1,  couple:0.45,tail:{flick:2,none:1},        trate:0.15, tamp:9,  wflick:0.05},
+  corvid:     {mass:400, sacc:0.7,  yaw:16, roll:22, pitch:10, blink:0.1,  couple:0.5, tail:{none:2,flick:1},        trate:0.1,  tamp:7,  wflick:0.05},
+  raptor:     {mass:800, sacc:0.25, yaw:20, roll:12, pitch:8,  blink:0.08, couple:0.5, tail:{none:3,flick:1},        trate:0.06, tamp:6,  wflick:0.03},
+  parrot:     {mass:300, sacc:0.4,  yaw:16, roll:25, pitch:10, blink:0.1,  couple:0.4, tail:{none:2,flick:1},        trate:0.08, tamp:6,  wflick:0.05},
+  kingfisher: {mass:40,  sacc:0.4,  yaw:12, roll:10, pitch:8,  blink:0.1,  couple:0.4, tail:{pump:2,flick:1},        trate:0.2,  tamp:10, wflick:0.05},
+  owl:        {mass:400, sacc:0.15, yaw:35, roll:15, pitch:8,  blink:0.08, couple:0.2, tail:{none:1},                trate:0,    tamp:0,  wflick:0.02,
                style:'pan', lid:'upper', lid_rest:[0.15,0.3,0.5]},
-  swallow:    {mass:20,  sacc:1.0,  yaw:12, roll:10, pitch:6,  blink:0.12, couple:0.4, tail:{none:2,flick:1},        trate:0.1,  tamp:6},
-  wader:      {mass:100, sacc:0.6,  yaw:14, roll:10, pitch:8,  blink:0.1,  couple:0.4, tail:{teeter:1,pump:1},       trate:0.15, tamp:8},
+  swallow:    {mass:20,  sacc:1.0,  yaw:12, roll:10, pitch:6,  blink:0.12, couple:0.4, tail:{none:2,flick:1},        trate:0.1,  tamp:6,  wflick:0.1},
+  wader:      {mass:100, sacc:0.6,  yaw:14, roll:10, pitch:8,  blink:0.1,  couple:0.4, tail:{teeter:1,pump:1},       trate:0.15, tamp:8,  wflick:0.06},
 };
+
+// Movement channels that can be switched on or off; wing flicks and flaps are opt-in.
+let ANIM_MOVES = {breath:true, head:true, blink:true, tail:true, crest:true, wing:false, flap:false};
+
+// "head,blink" = only those; "+wing,-tail" = defaults with changes; also "all", "none".
+function parse_moves(s){
+  let toks = String(s || '').split(/[,\s]+/).filter(Boolean);
+  let rel = toks.every(t=>/^[+-]/.test(t));
+  let m = {};
+  for (let k in ANIM_MOVES) m[k] = rel ? ANIM_MOVES[k] : false;
+  for (let t of toks){
+    let name = t.replace(/^[+-]/,'');
+    if (name == 'all' || name == 'none'){
+      for (let k in m) m[k] = name == 'all';
+      continue;
+    }
+    if (!(name in ANIM_MOVES)) throw new Error(`unknown movement "${name}"; use ${Object.keys(ANIM_MOVES).join(', ')}`);
+    m[name] = !t.startsWith('-');
+  }
+  return m;
+}
 
 function anim_params(arg,seed,intensity=0.7){
   let rng = make_rng(seed+'#anim');
@@ -3127,13 +3263,19 @@ function anim_params(arg,seed,intensity=0.7){
     tail_amp: num('tamp')*intensity*tri(0.6,1,1.2)*D2R,
     tail_tau: tri(0.1,0.12,0.15),
     crest: !!arg.crest,
+    wing_rate: num('wflick'),
+    wing_amp: 9*intensity*D2R,
+    BL: arg.body_length,
+    flap_h: arg.body_length*0.4*(0.5+0.5*intensity),
   };
   return ap;
 }
 
 function rest_pose(ap){
-  return {breath:0, yaw:0, pitch:0, roll:0, crest:0, tail:0, spread:0, teeter:0,
-    nict:0, lid:ap ? ap.lid_rest : 0, lid_upper:ap ? ap.lid_upper : false};
+  // same field order as pose_at, so both share one object shape
+  return {breath:0, yaw:0, pitch:0, roll:0, crest:0, tail:0, spread:0, teeter:0, wing:0,
+    nict:0, lid:ap ? ap.lid_rest : 0, lid_upper:ap ? ap.lid_upper : false,
+    flap:0, phi:0, ext:0, hop:0, tilt:0};
 }
 
 // minimum-jerk position profile (Flash & Hogan 1985)
@@ -3142,7 +3284,8 @@ function min_jerk(t){
   return t*t*t*(10-15*t+6*t*t);
 }
 
-function make_timeline(ap,T,seed){
+function make_timeline(ap,T,seed,moves=ANIM_MOVES){
+  let mv = Object.assign({},ANIM_MOVES,moves);
   let rng = make_rng(seed+'#timeline');
   let tri = make_tri(rng);
   let expo = rate=>rate > 0 ? -Math.log(1-rng())/rate : Infinity;
@@ -3283,27 +3426,88 @@ function make_timeline(ap,T,seed){
     return lerp(crest_s[i0],crest_s[(i0+1)%n],f);
   };
 
+  // wing flicks: the folded wing is briefly lifted at the tip and dropped back,
+  // in bouts of 1-3 flicks at ~6 Hz; its own stream so other channels are unchanged
+  let flicks = [];
+  if (mv.wing){
+    let wr = make_rng(seed+'#wing'), wt = make_tri(wr);
+    let wexp = rate=>-Math.log(1-wr())/Math.max(rate,1e-3);
+    let mk = t=>{
+      let n = 1 + Math.floor(wr()*3), f = wt(5,6,7.5);
+      return {t0:t, n, dur:n/f, A:ap.wing_amp*wt(0.7,1,1.2)};
+    };
+    for (let t = wexp(ap.wing_rate); t < T; t += wexp(ap.wing_rate)) flicks.push(mk(t));
+    if (!flicks.length) flicks.push(mk(wr()*T));
+  }
+  // full flap: crouch and spread, a few wingbeats that lift the bird off the
+  // perch, then fold and settle. Beats are slowed to 2.5-5 Hz (real takeoff
+  // beats are 10-25 Hz in small birds) so they read at animation frame rates.
+  // The downstroke is fully extended; the upstroke flexes the wrist.
+  let flap = null;
+  if (mv.flap){
+    let fr = make_rng(seed+'#flap'), ft = make_tri(fr);
+    let fb = clamp(5*Math.pow(ap.mass/20,-0.15),2.5,5);
+    let nb = 2 + Math.floor(fr()*3);
+    let tp = 0.18, tf = 0.25;
+    if (tp + nb/fb + tf > T-0.3) nb = Math.max(1,Math.floor((T-0.3-tp-tf)*fb));
+    let dur = tp + nb/fb + tf;
+    flap = {t0:0.15 + fr()*Math.max(0,T-0.3-dur), nb, fb, tp, tf, dur, H:ap.flap_h*ft(0.8,1,1.2)};
+  }
+  let flap_at = t=>{
+    let F = flap;
+    let tau = F ? t-F.t0 : -1;
+    if (!F || tau < 0 || tau >= F.dur) return {flap:0, phi:0, ext:0, hop:0, tilt:0};
+    let top = 75*D2R, mid = 15*D2R, amp = 60*D2R, fold = 10*D2R;
+    if (tau < F.tp){
+      let k = min_jerk(tau/F.tp);
+      return {flap:1, phi:lerp(fold,top,k), ext:k, hop:-0.04*ap.BL*Math.sin(PI*tau/F.tp), tilt:0};
+    }
+    tau -= F.tp;
+    let Tb = F.nb/F.fb;
+    if (tau < Tb){
+      let psi = 2*PI*F.fb*tau, r = tau/Tb;
+      let h = min_jerk(r/0.4) - min_jerk((r-0.65)/0.35);
+      return {flap:1, phi:mid+amp*Math.cos(psi), ext:1-0.35*Math.max(0,-Math.sin(psi)), hop:F.H*h, tilt:8*D2R*h};
+    }
+    tau -= Tb;
+    let k = min_jerk(tau/F.tf);
+    return {flap:1, phi:lerp(top,fold,k), ext:1-k, hop:-0.03*ap.BL*Math.sin(PI*tau/F.tf), tilt:0};
+  };
+
+  let wing_at = t=>{
+    let s = 0;
+    for (let i = 0; i < flicks.length; i++){
+      let tau = wrap(t-flicks[i].t0);
+      if (tau >= flicks[i].dur) continue;
+      s = Math.max(s, flicks[i].A*Math.pow(Math.sin(PI*flicks[i].n*tau/flicks[i].dur),2));
+    }
+    return s;
+  };
+
   let pose_at = t=>{
     t = wrap(t);
     let ph = (t*nb/T + ap.breath_phase)%1;
     let b = ph < 0.45 ? (1-Math.cos(PI*ph/0.45))/2 : (1+Math.cos(PI*(ph-0.45)/0.55))/2;
-    let [yaw,pitch,roll] = head_at(t);
+    let [yaw,pitch,roll] = mv.head ? head_at(t) : [0,0,0];
     let nict = 0, lid = 0;
-    for (let i = 0; i < blinks.length; i++){
+    for (let i = 0; i < (mv.blink ? blinks.length : 0); i++){
       let v = blink_shape(blinks[i],t);
       if (!v) continue;
       if (blinks[i].kind == 'nict') nict = Math.max(nict,v);
       else lid = Math.max(lid,v);
     }
     let lid_upper = ap.lid_upper;
-    let [tail,spread] = tail_at(t);
+    let [tail,spread] = mv.tail ? tail_at(t) : [0,0];
+    let fl = flap_at(t);
     return {
-      breath: ap.breath_amp*b, yaw, pitch, roll,
-      crest: crest_at(t), tail, spread, teeter: teeter_at(t),
+      breath: mv.breath ? ap.breath_amp*b : 0, yaw, pitch, roll,
+      crest: mv.head && mv.crest ? crest_at(t) : 0, tail, spread, teeter: mv.tail ? teeter_at(t) : 0,
+      wing: fl.flap ? 0 : wing_at(t),
       nict, lid: ap.lid_rest + (1-ap.lid_rest)*lid, lid_upper,
+      flap:fl.flap, phi:fl.phi, ext:fl.ext, hop:fl.hop, tilt:fl.tilt,
     };
   };
-  return {T, pose_at, segs, blinks, tails, bouts, breaths:nb};
+  return {T, pose_at, segs, blinks, tails, bouts, flicks, flap, moves:mv, breaths:nb};
 }
 
 // Builds everything for one seed: the drawing RNG path is identical to
@@ -3313,12 +3517,27 @@ function animator(seed,opts={}){
   perlin = null;
   let arg = generate_params();
   let rig = build_rig(arg);
-  let A = anim_rig(rig);
+  let moves = Object.assign({},ANIM_MOVES,opts.moves);
+  let A = anim_rig(rig,{flap:moves.flap});
   let T = opts.duration || 6;
   let ap = anim_params(arg,seed,opts.intensity === undefined ? 0.7 : opts.intensity);
-  let tl = make_timeline(ap,T,seed);
+  let tl = make_timeline(ap,T,seed,moves);
   let rest = rest_pose(ap);
-  let bb = get_bbox(render_world(A,Object.assign({},rest,{lid:0})).flat());
+  let fpts = render_world(A,Object.assign({},rest,{lid:0})).flat();
+  if (moves.wing) fpts = fpts.concat(render_world(A,Object.assign({},rest,{lid:0,wing:ap.wing_amp*1.2})).flat());
+  if (tl.flap){
+    // frame the whole flap: wings at the top and bottom of the stroke at full height
+    let F = tl.flap;
+    for (let k = 0; k <= 12; k++){
+      let p = tl.pose_at(F.t0 + F.dur*k/12);
+      fpts = fpts.concat(render_world(A,Object.assign({},rest,p,{lid:0})).flat());
+    }
+    for (let phi of [75,-45]){
+      let p = Object.assign({},rest,{flap:1, ext:1, phi:phi*D2R, hop:F.H, tilt:8*D2R});
+      fpts = fpts.concat(render_world(A,p).flat());
+    }
+  }
+  let bb = get_bbox(fpts);
   if (arg.facing) bb.x = -(bb.x+bb.w);
   let mg = opts.margin === undefined ? 0.04 : opts.margin;
   bb = {x:bb.x-bb.w*mg/2, y:bb.y-bb.h*mg/2, w:bb.w*(1+mg), h:bb.h*(1+mg)};
@@ -3576,7 +3795,7 @@ if (typeof module != "undefined"){
   module.exports = {
     main, bird, build_rig, render_static, generate_params, default_params, ARCHETYPES,
     animator, anim_rig, anim_params, make_timeline, rest_pose, render_exact, render_ops, render_world,
-    breath_disp, frame_fit, apply_fit, TEMPERAMENT,
+    breath_disp, frame_fit, apply_fit, TEMPERAMENT, ANIM_MOVES, parse_moves,
     draw_svg_flipbook, raster, gif_encode, anim_gif,
     reframe, cleanup, draw_svg, draw_svg_anim, draw_ps, binomen, seed_name, str_to_seed,
     get_bbox, FRAME_W, FRAME_H,
@@ -3605,7 +3824,9 @@ if (typeof module != "undefined"){
         seed = binomen();
       }
       let fps = num('fps',format == 'gif' ? 20 : 12);
-      let an = animator(seed,{duration:num('duration',6), intensity:num('intensity',0.7)});
+      let mi = process.argv.indexOf('--moves');
+      let moves = parse_moves(mi >= 0 ? process.argv[mi+1] : '');
+      let an = animator(seed,{duration:num('duration',6), intensity:num('intensity',0.7), moves});
       let oi = process.argv.indexOf('--out');
       let out = oi >= 0 ? process.argv[oi+1] : null;
       let fs = require('fs');

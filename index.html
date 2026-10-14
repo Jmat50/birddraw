@@ -29,6 +29,16 @@
   <button id="flip">download animated svg</button>
   <button id="gif">download gif</button>
 </div>
+<div class="bar" id="moves">
+  movements:
+  <label><input type="checkbox" data-move="breath" checked> breathing</label>
+  <label><input type="checkbox" data-move="head" checked> head</label>
+  <label><input type="checkbox" data-move="blink" checked> blinking</label>
+  <label><input type="checkbox" data-move="tail" checked> tail</label>
+  <label><input type="checkbox" data-move="crest" checked> crest</label>
+  <label><input type="checkbox" data-move="wing"> wing flicks</label>
+  <label><input type="checkbox" data-move="flap"> wing flaps</label>
+</div>
 <div id="out"></div>
 <canvas id="cv" style="display:none"></canvas>
 <div id="info"></div>
@@ -64,12 +74,19 @@ function render(seed){
 
 function build_live(){
   let t0 = performance.now();
-  live = animator(current.seed, {duration: Number($('dur').value) || 6, intensity: Number($('intensity').value)});
+  let moves = {};
+  document.querySelectorAll('#moves input').forEach(c => moves[c.dataset.move] = c.checked);
+  live = animator(current.seed, {duration: Number($('dur').value) || 6, intensity: Number($('intensity').value), moves});
   live.t0 = performance.now();
-  let ap = live.ap, tl = live.timeline;
+  let ap = live.ap, tl = live.timeline, mv = tl.moves, parts = [];
+  if (mv.breath) parts.push(`breathing ${(ap.breath_f*60).toFixed(0)}/min`);
+  if (mv.head) parts.push(`${tl.segs.length} head moves (${ap.style})`);
+  if (mv.blink) parts.push(`${tl.blinks.length} blinks`);
+  if (mv.tail) parts.push(`tail ${ap.tail_style}`);
+  if (mv.wing) parts.push(`${tl.flicks.length} wing flick bouts`);
+  if (tl.flap) parts.push(`flap: ${tl.flap.nb} beats at ${tl.flap.fb.toFixed(1)} Hz from ${tl.flap.t0.toFixed(1)} s`);
   $('info').textContent = `alive: ${live.arg.archetype}, rig ${Math.round(performance.now()-t0)} ms; ` +
-    `breathing ${(ap.breath_f*60).toFixed(0)}/min, ${tl.segs.length} head moves (${ap.style}), ` +
-    `${tl.blinks.length} blinks, tail ${ap.tail_style}`;
+    (parts.join(', ') || 'no movement');
 }
 
 function draw_frame(now){
@@ -137,6 +154,7 @@ $('drawon').onchange = () => render(current.seed);
 $('alive').onchange = update_alive;
 $('intensity').onchange = () => { live = null; update_alive(); };
 $('dur').onchange = () => { live = null; update_alive(); };
+document.querySelectorAll('#moves input').forEach(c => c.onchange = () => { live = null; update_alive(); });
 $('svg').onclick = () => { if (current) download(new Blob([current.svg], {type: 'image/svg+xml'}), fname('.svg')); };
 $('flip').onclick = () => {
   if (!current) return;

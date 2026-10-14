@@ -89,6 +89,33 @@ for (let seed of seeds){
     for (let op of an.ops(t)) check_lines(seed, t, op.fill || op.stroke);
   }
 
+  // movement toggles: everything plus wing flicks stays seamless and in frame;
+  // nothing switched on gives a still loop
+  let anw = bd.animator(seed, {moves: bd.parse_moves('all'), intensity: 1});
+  assert(anw.timeline.flicks.length > 0, `${seed}: wing enabled but no flicks scheduled`);
+  assert.strictEqual(JSON.stringify(anw.frame(0)), JSON.stringify(anw.frame(T)), `${seed}: wing loop not seamless`);
+  for (let f of anw.timeline.flicks){
+    let tp = f.t0 + f.dur / (2 * f.n);
+    check_lines(seed + ' (wing)', tp, anw.frame(tp));
+  }
+  // full flap: in frame throughout, lands back on the perch, painter still matches exact
+  let F = anw.timeline.flap;
+  assert(F, `${seed}: flap enabled but not scheduled`);
+  for (let k = 0; k <= 10; k++){
+    let t = F.t0 + F.dur * k / 10;
+    check_lines(seed + ' (flap)', t, anw.frame(t));
+  }
+  let tmid = F.t0 + F.tp + 0.5 * F.nb / F.fb;
+  assert(anw.pose_at(tmid).hop > 0, `${seed}: no airtime at mid flap`);
+  let after = anw.pose_at(F.t0 + F.dur + 0.01);
+  assert(!after.flap && after.hop == 0, `${seed}: bird did not settle after the flap`);
+  let dfl = sym_diff(anw.frame(tmid), anw.ops(tmid));
+  worst.painter = Math.max(worst.painter, dfl);
+  assert(dfl < 0.005, `${seed}: painter differs from exact mid-flap by ${(dfl*100).toFixed(2)}%`);
+  let ann = bd.animator(seed, {moves: bd.parse_moves('none')});
+  let f0 = JSON.stringify(ann.frame(0));
+  for (let t of [0.9, 2.3, T * 0.77]) assert.strictEqual(JSON.stringify(ann.frame(t)), f0, `${seed}: moves "none" still moves at t=${t}`);
+
   // breath warp has no folds: det(J) of q -> q + d(q) stays well above 0
   let m = an.A.meta, amp = 0.05, h = 0.05, bo = an.A.body_outline;
   let bb = bd.get_bbox(bo);
@@ -122,12 +149,18 @@ for (let seed of seeds){
   }
 
   if (PERF){
-    let n = 6, te = Date.now();
-    for (let i = 0; i < n; i++) an.frame(i * T / n);
-    let exact = (Date.now() - te) / n;
-    let to = Date.now();
-    for (let i = 0; i < n * 4; i++) an.ops(i * T / (n * 4));
-    let ops = (Date.now() - to) / (n * 4);
+    // median per-frame time, so a garbage-collection pause doesn't count as render time
+    let med = (n, f) => {
+      let ts = [];
+      for (let i = 0; i < n; i++){
+        let t0 = process.hrtime.bigint();
+        f(i * T / n);
+        ts.push(Number(process.hrtime.bigint() - t0) / 1e6);
+      }
+      return ts.sort((a, b) => a - b)[n >> 1];
+    };
+    let exact = med(7, t => an.frame(t));
+    let ops = med(25, t => an.ops(t));
     worst.exact = Math.max(worst.exact, exact);
     worst.ops = Math.max(worst.ops, ops);
   }

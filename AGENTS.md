@@ -15,10 +15,11 @@ Procedural perched-bird line drawings for pen plotters, adapted from fishdraw, w
 - Static output must stay byte-identical: never add, remove or reorder global `rand()`/`jsr` calls in the drawing path. If a static change is intentional, re-record with `npm run test:golden:record` and say so in the commit.
 - Animation randomness uses local streams only (`make_rng(seed+'#anim')`, `seed+'#timeline'`). Don't regenerate geometry or re-sample noise per frame; only transform cached lines (prevents shimmer).
 - Loops must stay seamless: any new time signal must be periodic in `T` (`t mod T`, wrapped kernels).
+- New movement channels go in `ANIM_MOVES` with their own RNG stream (`seed+'#name'`), so toggling one never changes the others. Keep `pose_at` and `rest_pose` building pose objects with the same field order, or the per-point maps slow down.
 - Match the existing terse style (2-space indent, short names, sparse comments).
 
 ## Commands
 - `npm test`: determinism (50 seeds), static golden hashes, animation checks (determinism, seamless loop, Jacobian, rest≈static, painter≈exact, perf budgets). Run before committing.
 - `npm run gallery` / `npm run anim`: sample renders into `samples/`.
-- `node birddraw.js --seed "X" --format svg|json|smil|csv|ps|anim|gif|frames [--out path] [--fps] [--duration] [--intensity]`.
+- `node birddraw.js --seed "X" --format svg|json|smil|csv|ps|anim|gif|frames [--out path] [--fps] [--duration] [--intensity] [--moves +flap,-tail]`.
 - On Windows PowerShell 5, `>` writes UTF-16; use `--out` or `Out-File -Encoding utf8`.
