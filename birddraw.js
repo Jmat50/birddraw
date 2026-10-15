@@ -1604,8 +1604,19 @@ function beak(base,A,L,D,arg){
     nar.push(P(un + Math.cos(t)*L*0.045, vn + Math.sin(t)*D*0.06));
   }
   lines.push(nar);
+  // cere: bare saddle over the base of the upper mandible, around the naris
+  let uc = arg.beak_cere ? un + L*0.09 : u0;
+  if (arg.beak_cere){
+    let top = P(uc, mid_up(uc) - Du*Math.pow(g(1-uc/Lu),0.85));
+    let bot = P(uc, mid_up(uc) - (hook ? Du*0.08*g(1-uc/Lu) : 0));
+    let mid2 = lerp2d(...top,...bot,0.5);
+    lines.push(qbez(top,[mid2[0]+dir[0]*L*0.05,mid2[1]+dir[1]*L*0.05],bot,8));
+  }
+  let past_cere = (x,y)=>(x-base[0])*dir[0]+(y-base[1])*dir[1] > uc;
   if (arg.beak_dark){
-    lines.push(...fill_shape(upper_poly,1.6));
+    let fu = fill_shape(upper_poly,1.6);
+    if (arg.beak_cere) fu = clip_multi(fu.map(l=>resample(l,1)),past_cere,binclip).true;
+    lines.push(...fu);
     lines.push(...fill_shape(lower_poly,2.2));
   }else{
     lines.push(...shade_shape(lower_poly,1.8,0,D*0.25));
@@ -1617,7 +1628,15 @@ function beak(base,A,L,D,arg){
 
 // ===== head (world frame) =====
 
-function head_outline(hc,HR){
+// Angles run clockwise on screen from +x (nape side): PI is the face,
+// 1.5*PI the crown.
+function ang_bump(a,c,w){
+  let d = a-c;
+  d -= Math.round(d/(PI*2))*PI*2;
+  return Math.exp(-(d*d)/(w*w));
+}
+
+function head_outline(hc,HR,shape='round'){
   let n = 48;
   let o = [];
   for (let i = 0; i < n; i++){
@@ -1625,9 +1644,108 @@ function head_outline(hc,HR){
     let r = HR*(1+(noise(Math.cos(a)+1,Math.sin(a)+1,31)-0.5)*0.1);
     let rx = r*1.04;
     let ry = r*(Math.sin(a) < 0 ? 0.93 : 0.98);
+    let top = Math.sin(a) < 0;
+    if (shape == 'flat'){
+      rx *= 1.05;
+      if (top) ry *= 0.82;
+    }else if (shape == 'peaked'){
+      let k = 1+0.22*ang_bump(a,PI*1.62,0.3);
+      rx *= k; ry *= k;
+    }else if (shape == 'domed'){
+      let k = 1+0.16*ang_bump(a,PI*1.3,0.35)-0.06*ang_bump(a,PI*1.9,0.3);
+      rx *= k; ry *= k*(top ? 1.04 : 1);
+    }else if (shape == 'sleek'){
+      let k = 1+0.18*ang_bump(a,PI*1.88,0.28);
+      rx *= 1.08*k; ry *= k*(top ? 0.86 : 1);
+    }else if (shape == 'blocky'){
+      let c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+      let k = Math.pow(Math.pow(c,3)+Math.pow(s,3),-1/3);
+      if (!top) k = lerp(1,k,0.4);
+      rx *= 1.04*k; ry *= k;
+    }
     o.push([hc[0]+Math.cos(a)*rx, hc[1]+Math.sin(a)*ry]);
   }
   return o;
+}
+
+function qbez(P0,C,P1,n=12){
+  let o = [];
+  for (let i = 0; i <= n; i++){
+    let s = i/n, a = (1-s)*(1-s), b = 2*s*(1-s), c = s*s;
+    o.push([a*P0[0]+b*C[0]+c*P1[0], a*P0[1]+b*C[1]+c*P1[1]]);
+  }
+  return o;
+}
+
+// Crest styles besides the fan. Each returns raw lines (the head clips its
+// copy), masks, and the pivot the idle animation swings it about.
+function crest_shape(style,hc,HR,hp,cl){
+  let n = hp.length;
+  let at = (a,k=0)=>{
+    let i = ((Math.round(a/(PI*2)*n)%n)+n)%n;
+    return lerp2d(...hp[i],...hc,k);
+  };
+  let lines = [], masks = [];
+  if (style == 'spike'){
+    let P0 = at(PI*1.36,0.05), P1 = at(PI*1.86,0.05);
+    let apex = at(PI*1.6);
+    apex = [apex[0]+cl*0.9, apex[1]-cl*1.35];
+    let front = qbez(P0,[P0[0]+cl*0.15,P0[1]-cl*1.0],apex);
+    let back = qbez(apex,[apex[0]-cl*0.15,P1[1]-cl*0.35],P1);
+    let poly = front.concat(back.slice(1));
+    lines.push(poly);
+    for (let k = 0; k < 6; k++){
+      let b = lerp2d(...P0,...P1,(k+0.5)/6);
+      let e = lerp2d(...apex,...b,0.15+rand()*0.35);
+      lines.push(qbez(b,lerp2d(...b,...e,0.5).map((v,j)=>v+(j?0:cl*0.08)),e,6));
+    }
+    masks.push(poly.concat(qbez(P1,hc,P0,6).slice(1,-1)));
+    return {lines, masks, poly:masks[0], base:at(PI*1.6)};
+  }
+  if (style == 'shaggy'){
+    let m = 8, outer = [], base = [];
+    for (let i = 0; i <= 24; i++) base.push(at(lerp(PI*1.42,PI*2.06,i/24),0.04));
+    for (let k = 0; k <= m*2; k++){
+      let t = k/(m*2);
+      let b = at(lerp(PI*1.42,PI*2.06,t));
+      let nx = b[0]-hc[0], ny = b[1]-hc[1], l = Math.hypot(nx,ny) || 1;
+      nx /= l; ny /= l;
+      let tip = k%2 == 1;
+      let len = tip ? cl*(0.45+0.55*Math.sin(PI*(0.15+t*0.75)))*(0.75+rand()*0.5) : cl*0.08;
+      let dx = nx+(tip ? 0.7 : 0), dy = ny-(tip ? 0.1 : 0), dl = Math.hypot(dx,dy);
+      outer.push([b[0]+dx/dl*len, b[1]+dy/dl*len]);
+      if (tip) lines.push([lerp2d(...b,...hc,0.03),lerp2d(...b,...outer[outer.length-1],0.7)]);
+    }
+    lines.unshift(outer);
+    masks.push(outer.concat(base.slice().reverse()));
+    return {lines, masks, poly:masks[0], base:at(PI*1.7)};
+  }
+  if (style == 'plume'){
+    let P0 = at(PI*1.4,0.05);
+    let f = feather(P0,[P0[0]-cl*0.95,P0[1]-cl*1.9],cl*0.42,{tip:'round', bend:0.28, asym:0.5, n:14, barbs:0.25, dark:true, dark_len:0.9, dark_w:0.7});
+    return {lines:f.lines, masks:[f.poly], poly:f.poly, base:P0};
+  }
+  if (style == 'tufts'){
+    let mk = (a,dx,s)=>{
+      let P0 = at(a,0.12);
+      return feather(P0,[P0[0]+dx*cl,P0[1]-cl*1.8*s],cl*0.4*s,{tip:'pointed', bend:0.12, asym:0.5, n:12, barbs:0.35, rachis:false});
+    };
+    let near = mk(PI*1.34,-0.3,1), far = mk(PI*1.5,0.15,0.8);
+    lines.push(...near.lines, ...clip_multi(far.lines,near.poly).false);
+    return {lines, masks:[near.poly,far.poly], poly:near.poly, base:at(PI*1.42)};
+  }
+  if (style == 'nape'){
+    let k = 2+(rand() < 0.5 ? 1 : 0), occ = new Occluder();
+    for (let i = 0; i < k; i++){
+      let P0 = at(PI*(1.9+i*0.04),0.1);
+      let f = feather(P0,[P0[0]+cl*(2.4-i*0.35),P0[1]+cl*(0.35+i*0.3)],HR*0.07,{tip:'pointed', bend:-0.08, asym:0.5, n:12, rachis:false});
+      lines.push(...occ.clip(f.lines));
+      occ.add(f.poly);
+      masks.push(f.poly);
+    }
+    return {lines, masks, poly:masks[0], base:at(PI*1.92)};
+  }
+  return null;
 }
 
 function face_predicate(arg,hc,HR,E,ER,bbase){
@@ -1653,6 +1771,21 @@ function face_predicate(arg,hc,HR,E,ER,bbase){
   if (arg.face_cheek){
     fs.push((x,y)=>Math.hypot((x-(ex+HR*0.38))/1.2,y-(ey+HR*0.32)) < HR*0.24);
   }
+  if (arg.face_lores){
+    fs.push((x,y)=>pt_seg_dist([x,y],E,bbase) < ER*lerp(1.1,0.75,clamp((ex-x)/(ex-bbase[0]),0,1)));
+  }
+  if (arg.face_crown){
+    fs.push((x,y)=>{
+      let yl = ey - ER*1.5 + (x-ex)*0.12;
+      return y < yl && y > yl - HR*0.24 && x > bbase[0];
+    });
+  }
+  if (arg.face_collar){
+    fs.push((x,y)=>{
+      let yc = hc[1] + HR*0.62 - (x-hc[0])*0.25;
+      return Math.abs(y-yc) < HR*0.13 && x > hc[0]-HR*0.35;
+    });
+  }
   if (!fs.length) return null;
   return (x,y)=>{
     for (let i = 0; i < fs.length; i++) if (fs[i](x,y)) return true;
@@ -1661,7 +1794,7 @@ function face_predicate(arg,hc,HR,E,ER,bbase){
 }
 
 function head_parts(arg,hc,HR,body_world){
-  let hp = head_outline(hc,HR);
+  let hp = head_outline(hc,HR,arg.head_shape);
 
   let by = arg.beak_y;
   let bbase = [hc[0]-Math.cos(by)*HR*0.88, hc[1]+Math.sin(by)*HR*0.88];
@@ -1680,6 +1813,30 @@ function head_parts(arg,hc,HR,body_world){
     eye_lines = eye_lines.concat(binclip(closed(ring),(x,y,t)=>noise(t*20,7)>0.35).true);
     eye_mask = ring;
   }
+  let eye_masks = [eye_mask];
+  if (arg.eye_arcs){
+    for (let s = -1; s <= 1; s += 2){
+      let c0 = s < 0 ? -PI*0.85 : PI*0.2, c1 = s < 0 ? -PI*0.15 : PI*0.8;
+      let cr = [];
+      for (let i = 0; i <= 20; i++){
+        let t = i <= 10 ? i/10 : (20-i)/10;
+        let a = lerp(c0,c1,t);
+        let r = ER*(1.25 + (i <= 10 ? 0 : 0.45*Math.sin(PI*t)));
+        cr.push([E[0]+Math.cos(a)*r, E[1]+Math.sin(a)*r*0.96]);
+      }
+      eye_lines.push(closed(cr));
+      eye_masks.push(cr);
+    }
+  }
+  if (arg.eye_spect){
+    let a = lerp2d(...E,...bbase,ER*1.4/dist(...E,...bbase));
+    let b = [bbase[0]+2, bbase[1]-HR*0.05];
+    let nx = -(b[1]-a[1]), ny = b[0]-a[0], nl = Math.hypot(nx,ny) || 1;
+    let w = ER*0.28;
+    let strip = [[a[0]+nx/nl*w,a[1]+ny/nl*w],[b[0]+nx/nl*w*0.6,b[1]+ny/nl*w*0.6],[b[0]-nx/nl*w*0.6,b[1]-ny/nl*w*0.6],[a[0]-nx/nl*w,a[1]-ny/nl*w]];
+    eye_lines.push([strip[0],strip[1]],[strip[3],strip[2]]);
+    eye_masks.push(strip);
+  }
   if (arg.bristles){
     for (let i = 0; i < 3; i++){
       let b = barbel(bbase[0]+2,bbase[1]-D*0.05+i*1.2,8,PI+0.25+i*0.15,1.6);
@@ -1693,6 +1850,24 @@ function head_parts(arg,hc,HR,body_world){
   if (fp){
     lines.push(...patternshade_shape(hp,2.1,fp));
   }
+  if (arg.face_disc){
+    // facial disc rim (ruff) behind the eye, with short outward ticks
+    let c = [E[0]+HR*0.1, E[1]+HR*0.12], r = HR*0.66;
+    let rim = [];
+    for (let i = 0; i <= 30; i++){
+      let a = lerp(-PI*0.62,PI*0.58,i/30);
+      rim.push([c[0]+Math.cos(a)*r, c[1]+Math.sin(a)*r*1.1]);
+    }
+    let inside = (x,y)=>pt_in_poly(x,y,hp);
+    lines.push(...binclip(rim,inside).true);
+    for (let i = 1; i < rim.length-1; i += 2){
+      let [x,y] = rim[i];
+      if (!inside(x,y)) continue;
+      let dx = x-c[0], dy = y-c[1], l = Math.hypot(dx,dy);
+      let k = HR*(i%4 == 1 ? 0.07 : 0.045);
+      lines.push([[x,y],[x+dx/l*k, y+dy/l*k]]);
+    }
+  }
   lines.push(...plumage_mesh(hp,{
     size: HR*0.32,
     grow: 1.2,
@@ -1705,7 +1880,12 @@ function head_parts(arg,hc,HR,body_world){
   let n_end = lines.length;
   let crest = null;
 
-  if (arg.crest){
+  let cs = arg.crest && arg.crest_style != 'fan' ? crest_shape(arg.crest_style,hc,HR,hp,arg.crest_len*HR) : null;
+  if (cs){
+    lines.push(...clip_multi(cs.lines,hp).false);
+    masks.push(...cs.masks);
+    crest = cs;
+  }else if (arg.crest){
     let a0 = PI*1.3, a1 = PI*1.9;
     let cv = [];
     for (let i = 0; i < 14; i++){
@@ -1721,7 +1901,7 @@ function head_parts(arg,hc,HR,body_world){
   }
   return {
     beak: bk,
-    eye: part(eye_lines,[eye_mask]),
+    eye: part(eye_lines,eye_masks),
     head: part(lines,masks),
     hp, E, ER, bbase, crest, n_seam, n_end,
   };
@@ -2176,6 +2356,15 @@ function default_params(){
     face_malar: 0,
     face_cheek: 0,
     face_supercilium: 0,
+    head_shape: 'round',
+    crest_style: 'fan',
+    face_lores: 0,
+    face_crown: 0,
+    face_collar: 0,
+    face_disc: 0,
+    eye_arcs: 0,
+    eye_spect: 0,
+    beak_cere: 0,
     wing_ratio: 0.72,
     wing_angle: 0.08,
     kipp: 0.28,
@@ -2275,6 +2464,47 @@ let ARCHETYPES = {
   },
 };
 
+// Head extras. Drawn from their own stream so the main sequence is untouched
+// and birds that get none of them keep their drawing.
+let HEAD_VARIETY = {
+  finch:      {shape:{round:5,flat:1,domed:2,peaked:1}, crest:{fan:1,spike:2,shaggy:1}, crest_add:.04, lores:.1, crown:.1, collar:.08, arcs:.1, spect:0, cere:0, disc:0},
+  sparrow:    {shape:{round:4,flat:2,domed:1,peaked:1}, crest:{fan:1,spike:1,plume:1}, crest_add:.04, lores:.2, crown:.35, collar:.1, arcs:.1, spect:0, cere:0, disc:0},
+  warbler:    {shape:{round:4,flat:2,sleek:2,domed:1}, crest:{fan:1,spike:1}, crest_add:.02, lores:.3, crown:.25, collar:.08, arcs:.3, spect:.15, cere:0, disc:0},
+  thrush:     {shape:{round:4,flat:1,sleek:1,domed:1}, crest:{fan:1}, crest_add:0, lores:.15, crown:.05, collar:.1, arcs:.3, spect:.05, cere:0, disc:0},
+  corvid:     {shape:{round:2,flat:3,sleek:2,blocky:1,peaked:1}, crest:{fan:1,spike:1,shaggy:1}, crest_add:.03, lores:.05, crown:0, collar:.25, arcs:0, spect:0, cere:0, disc:0},
+  raptor:     {shape:{round:2,flat:3,blocky:2,sleek:1}, crest:{fan:1,shaggy:2,nape:1}, crest_add:.05, lores:.1, crown:.05, collar:.1, arcs:0, spect:.05, cere:.85, disc:0},
+  parrot:     {shape:{round:2,domed:3,blocky:2}, crest:{fan:2,spike:2,plume:1}, crest_add:.05, lores:.15, crown:.05, collar:.25, arcs:.05, spect:0, cere:.6, disc:0},
+  kingfisher: {shape:{round:1,blocky:4,flat:1}, crest:{fan:1,shaggy:4}, crest_add:.1, lores:.3, crown:.15, collar:.4, arcs:0, spect:0, cere:0, disc:0},
+  owl:        {shape:{round:4,flat:2,blocky:1}, crest:{tufts:5,fan:1}, crest_add:.35, lores:0, crown:0, collar:.05, arcs:0, spect:0, cere:.3, disc:.8},
+  swallow:    {shape:{round:3,flat:3,sleek:2}, crest:{fan:1}, crest_add:0, lores:.2, crown:0, collar:.3, arcs:0, spect:0, cere:0, disc:0},
+  wader:      {shape:{round:3,sleek:3,flat:2,domed:1}, crest:{fan:1,nape:3,shaggy:1}, crest_add:.12, lores:.25, crown:.25, collar:.15, arcs:.15, spect:0, cere:0, disc:0},
+};
+
+function head_variety(arg,name){
+  let hv = HEAD_VARIETY[name];
+  let hr = make_rng(jsr+'#head');
+  let pick = o=>{
+    let ks = Object.keys(o), s = 0;
+    for (let i = 0; i < ks.length; i++) s += o[ks[i]];
+    let u = hr()*s;
+    for (let i = 0; i < ks.length; i++){ u -= o[ks[i]]; if (u < 0) return ks[i]; }
+    return ks[0];
+  };
+  arg.head_shape = pick(hv.shape);
+  let cs = pick(hv.crest);
+  if (hr() < hv.crest_add) arg.crest = 1;
+  arg.crest_style = arg.crest ? cs : 'fan';
+  arg.face_lores = Number(hr() < hv.lores);
+  arg.face_crown = Number(hr() < hv.crown);
+  arg.face_collar = Number(hr() < hv.collar);
+  arg.face_disc = Number(hr() < hv.disc);
+  let arcs = hr() < hv.arcs, spect = hr() < hv.spect;
+  arg.eye_spect = Number(spect);
+  arg.eye_arcs = Number(arcs && !spect && !arg.eye_ring);
+  if (spect) arg.eye_ring = 1;
+  arg.beak_cere = Number(hr() < hv.cere);
+}
+
 // Absolute half-widths of the triangular sampling around archetype centres.
 // Negative values are relative to the centre.
 let PARAM_SPREAD = {
@@ -2360,6 +2590,7 @@ function generate_params(){
   arg.plumage_detail = rndtri(0.5,0.8,1);
   arg.feather_point = rndtri(0.8,1.1,1.5);
   arg.barb_density = rndtri(0.1,0.22,0.4);
+  head_variety(arg, src === B ? bn : an);
   return arg;
 }
 
@@ -2728,7 +2959,7 @@ function anim_rig(rig,opts={}){
     P('eye','head',L[2]),
     P('head','head',{lines:L[3].lines.slice(m.n_seam,m.n_end), masks:[m.hp]}),
   );
-  if (m.crest) parts.push(P('crest','crest',{lines:m.crest.lines, masks:[m.crest.poly]}));
+  if (m.crest) parts.push(P('crest','crest',{lines:m.crest.lines, masks:m.crest.masks || [m.crest.poly]}));
   parts.push(
     P('wing','wing',L[4]),
     P('body','body',L[5]),
