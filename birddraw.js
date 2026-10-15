@@ -1613,17 +1613,30 @@ function beak(base,A,L,D,arg){
     lines.push(qbez(top,[mid2[0]+dir[0]*L*0.05,mid2[1]+dir[1]*L*0.05],bot,8));
   }
   let past_cere = (x,y)=>(x-base[0])*dir[0]+(y-base[1])*dir[1] > uc;
+  let j0, j1;
   if (arg.beak_dark){
     let fu = fill_shape(upper_poly,1.6);
     if (arg.beak_cere) fu = clip_multi(fu.map(l=>resample(l,1)),past_cere,binclip).true;
     lines.push(...fu);
+    j0 = lines.length;
     lines.push(...fill_shape(lower_poly,2.2));
+    j1 = lines.length;
   }else{
+    j0 = lines.length;
     lines.push(...shade_shape(lower_poly,1.8,0,D*0.25));
+    j1 = lines.length;
     let ridge = culmen.slice(2,~~(n*0.7)).map((p,i)=>[p[0]+nd[0]*D*0.08,p[1]+nd[1]*D*0.08]);
     lines.push(...binclip(ridge,(x,y,t)=>rand()<0.8).true);
   }
-  return part(lines,[poly]);
+  let p = part(lines,[poly]);
+  // lower mandible, hinged at the gape, for the singing animation:
+  // idx = its lines; mouth = upper cutting edge over the lower jaw's length
+  let idx = [1];
+  for (let j = j0; j < j1; j++) idx.push(j);
+  let mouth = [];
+  for (let i = 0; i <= n; i++) if (lerp(u0,Lu,i/n) <= Ll+1e-9) mouth.push(tomium_u[i]);
+  p.jaw = {pivot:P(u0,mid(u0)), idx, upper:upper_poly, lower, tomium_l, mouth};
+  return p;
 }
 
 // ===== head (world frame) =====
@@ -2953,9 +2966,16 @@ function anim_rig(rig,opts={}){
   let lg = opts.flap ? 'legs' : 'static';
   let parts = [];
   if (opts.flap) parts.push(P('wing_open','wing_open',{lines:[], masks:[]}));
+  // singing opens the lower mandible, so it becomes its own part behind the upper one
+  let J = opts.sing ? L[1].jaw : null;
+  let ij = J ? new Set(J.idx) : null;
+  parts.push(P('near_front',lg,L[0]));
+  if (J) parts.push(
+    P('beak','head',{lines:L[1].lines.filter((l,i)=>!ij.has(i)), masks:[J.upper]}),
+    P('jaw','jaw',{lines:L[1].lines.filter((l,i)=>ij.has(i)), masks:[J.mouth.concat(J.lower.slice().reverse())]}),
+  );
+  else parts.push(P('beak','head',L[1]));
   parts.push(
-    P('near_front',lg,L[0]),
-    P('beak','head',L[1]),
     P('eye','head',L[2]),
     P('head','head',{lines:L[3].lines.slice(m.n_seam,m.n_end), masks:[m.hp]}),
   );
@@ -3006,7 +3026,7 @@ function anim_rig(rig,opts={}){
   }
   let body_outline = parts.find(p=>p.name == 'body').masks[0];
   let wopen = opts.flap ? wing_open_build(rig.arg,m.BL) : null;
-  return {rig, meta:m, arg:rig.arg, parts, tail, body_outline, wopen};
+  return {rig, meta:m, arg:rig.arg, parts, tail, body_outline, wopen, jaw:J};
 }
 
 // ===== idle animation: open wing for flaps =====
@@ -3329,6 +3349,14 @@ function anim_frame(A,pose,painter){
         }
       }
       fr.masks = fr.feathers.map(f=>f.poly);
+    }else if (g == 'jaw'){
+      // the beak points along -x, so opening is a negative (counter-clockwise) turn
+      let J = A.jaw, a = -(pose.gape || 0), pv = J.pivot;
+      let r = a ? (q=>rot_pt(q,a,pv[0],pv[1])) : (q=>q);
+      fr.lines = map_cull(p.lines,q=>mp.head_c(r(q)));
+      fr.masks = [J.mouth.concat(J.lower.map(r).reverse()).map(mp.head)];
+      // the edge starts one sample past the hinge, which lies on the upper mask's boundary
+      if (a < -0.01) fr.dyn.push(...map_cull([J.tomium_l.slice(1).map(r)],mp.head_c));
     }else if (g == 'head' || g == 'crest'){
       let fc = g == 'head' ? mp.head_c : mp.crest_c;
       let fm = g == 'head' ? mp.head : mp.crest;
@@ -3433,8 +3461,9 @@ let TEMPERAMENT = {
   wader:      {mass:100, sacc:0.6,  yaw:14, roll:10, pitch:8,  blink:0.1,  couple:0.4, tail:{teeter:1,pump:1},       trate:0.15, tamp:8,  wflick:0.06},
 };
 
-// Movement channels that can be switched on or off; wing flicks and flaps are opt-in.
-let ANIM_MOVES = {breath:true, head:true, blink:true, tail:true, crest:true, wing:false, flap:false};
+// Movement channels that can be switched on or off; wing flicks, flaps and the
+// singing beak are opt-in.
+let ANIM_MOVES = {breath:true, head:true, blink:true, tail:true, crest:true, wing:false, flap:false, sing:false};
 
 // "head,blink" = only those; "+wing,-tail" = defaults with changes; also "all", "none".
 function parse_moves(s){
@@ -3498,6 +3527,8 @@ function anim_params(arg,seed,intensity=0.7){
     wing_amp: 9*intensity*D2R,
     BL: arg.body_length,
     flap_h: arg.body_length*0.4*(0.5+0.5*intensity),
+    mix,
+    beak_size: arg.beak_depth*arg.beak_len,
   };
   return ap;
 }
@@ -3506,7 +3537,7 @@ function rest_pose(ap){
   // same field order as pose_at, so both share one object shape
   return {breath:0, yaw:0, pitch:0, roll:0, crest:0, tail:0, spread:0, teeter:0, wing:0,
     nict:0, lid:ap ? ap.lid_rest : 0, lid_upper:ap ? ap.lid_upper : false,
-    flap:0, phi:0, ext:0, hop:0, tilt:0};
+    flap:0, phi:0, ext:0, hop:0, tilt:0, gape:0};
 }
 
 // minimum-jerk position profile (Flash & Hogan 1985)
@@ -3704,6 +3735,9 @@ function make_timeline(ap,T,seed,moves=ANIM_MOVES){
     let k = min_jerk(tau/F.tf);
     return {flap:1, phi:lerp(top,fold,k), ext:1-k, hop:-0.03*ap.BL*Math.sin(PI*tau/F.tf), tilt:0};
   };
+  // voice: always scheduled (its own streams) so audio works without the
+  // sing channel, which only adds the beak gape
+  let song = make_song(voice_params(ap,seed),T);
 
   let wing_at = t=>{
     let s = 0;
@@ -3736,9 +3770,288 @@ function make_timeline(ap,T,seed,moves=ANIM_MOVES){
       wing: fl.flap ? 0 : wing_at(t),
       nict, lid: ap.lid_rest + (1-ap.lid_rest)*lid, lid_upper,
       flap:fl.flap, phi:fl.phi, ext:fl.ext, hop:fl.hop, tilt:fl.tilt,
+      gape: mv.sing ? song.gape_at(t) : 0,
     };
   };
-  return {T, pose_at, segs, blinks, tails, bouts, flicks, flap, moves:mv, breaths:nb};
+  return {T, pose_at, segs, blinks, tails, bouts, flicks, flap, moves:mv, breaths:nb, song};
+}
+
+// ===== idle animation: voice =====
+// A seeded call or song per bird, loop-locked like the motion (docs/sound.md).
+// Centre pitch follows mass via the passerine law fc = 7.204 kHz * M[g]^-0.24
+// (Wallschlaeger 1980) times a per-archetype factor (owls, raptors and parrots
+// sit off it); big beaks trill slower over narrower sweeps (Podos 1997, 2001).
+// gap = mean seconds between utterance onsets, k = gamma shape; gape = beak
+// opening scale (owls hoot nearly closed, crows caw wide).
+let VOICE = {
+  finch:      {pitch:1,    gap:9,  k:3, gape:1},
+  sparrow:    {pitch:1,    gap:4,  k:2, gape:1},
+  warbler:    {pitch:1.1,  gap:7,  k:3, gape:0.9},
+  thrush:     {pitch:1,    gap:6,  k:3, gape:1},
+  corvid:     {pitch:1.1,  gap:5,  k:2, gape:2},
+  raptor:     {pitch:1.3,  gap:12, k:2, gape:1.3},
+  parrot:     {pitch:1,    gap:3,  k:2, gape:0.8},
+  kingfisher: {pitch:1,    gap:8,  k:2, gape:1.2},
+  owl:        {pitch:0.55, gap:10, k:3, gape:0.25},
+  swallow:    {pitch:1.05, gap:5,  k:2, gape:1},
+  wader:      {pitch:0.9,  gap:6,  k:2, gape:1},
+};
+
+// Utterance templates: each returns [{t, n}] notes from time 0. F = centre
+// pitch (Hz), r/t = rng/triangular, V = voice (rate_max, bw(rate)).
+// Note fields: dur, f = pitch control points (min-jerk in log frequency),
+// r = harmonic rolloff, K = harmonics, fr/bw = formant at fr*f with bandwidth
+// bw*fc, att/rel, fmr/fmd and amr/amd = vibrato and tremolo, harsh/jbw =
+// random-FM roughness, sub = subharmonic, noise/nfr/nq = noise band, v2 = second
+// voice {f, g}, gain.
+let VOX = {
+  finch(F,r,t,V){ // chaffinch-like: 2-3 trill phrases stepping down, then a flourish
+    let ev = [], tt = 0, np = 2 + (r() < 0.5);
+    for (let p = 0; p < np; p++){
+      let rate = Math.min(t(6,8,11),V.rate_max), sd = 0.55/rate, hi = F*t(1.3,1.6,1.9)*(1-0.12*p), bw = Math.min(hi*0.45,V.bw(rate));
+      let reps = Math.round(t(3,5,7));
+      for (let k = 0; k < reps; k++){ ev.push({t:tt, n:{dur:sd, f:[hi,hi-bw*0.6,hi-bw], r:0.15, att:0.004, rel:0.012}}); tt += 1/rate; }
+      tt += 0.04;
+    }
+    ev.push({t:tt, n:{dur:0.09, f:[F*0.9,F*1.5], r:0.1}}); tt += 0.12;
+    ev.push({t:tt, n:{dur:0.22, f:[F*1.1,F*1.9,F*1.2], r:0.12, fmr:30, fmd:0.02}});
+    return ev;
+  },
+  sparrow(F,r,t){ // house-sparrow-like cheeps, 2-4 per second
+    let ev = [], tt = 0, n = Math.round(t(3,5,8));
+    for (let k = 0; k < n; k++){
+      let f0 = F*t(0.75,0.85,1);
+      ev.push({t:tt, n:{dur:t(0.07,0.1,0.13), f:[f0,f0*t(1.25,1.4,1.6),f0*0.9], r:0.45, harsh:0.04, bw:0.8}});
+      tt += t(0.25,0.33,0.5);
+    }
+    return ev;
+  },
+  warbler(F,r,t,V){ // fast trill, pitch ramping up or down
+    let ev = [], rate = Math.min(t(11,15,20),V.rate_max), sd = 0.6/rate, n = Math.round(t(12,18,26)), dir = r() < 0.5 ? 1 : -1;
+    let bw = Math.min(F*0.5,V.bw(rate));
+    for (let k = 0; k < n; k++){
+      let c = F*Math.pow(1.25,dir*(k/n-0.5));
+      ev.push({t:k/rate, n:{dur:sd, f:[c+bw/2,c-bw/2], r:0.08, att:0.003, rel:0.01}});
+    }
+    return ev;
+  },
+  thrush(F,r,t){ // soft intro, three-pitch flute phrase, two-voice terminal trill
+    let ev = [], tt = 0;
+    for (let k = 0; k < 2; k++){ ev.push({t:tt, n:{dur:0.05, f:[F*0.65,F*0.6], r:0.1, gain:0.35}}); tt += 0.12; }
+    let lv = [F*1.3,F,F*0.8], o = [[1,2,0],[0,2,1],[1,0,2],[2,0,1]][Math.floor(r()*4)];
+    for (let k = 0; k < 3; k++){
+      let f = lv[o[k]]*t(0.97,1,1.03);
+      ev.push({t:tt, n:{dur:t(0.12,0.16,0.2), f:[f*0.97,f,f*1.01], r:0.06, bw:0.3}});
+      tt += 0.2;
+    }
+    ev.push({t:tt+0.02, n:{dur:0.3, f:[F*1.8,F*2.1], r:0.05, v2:{f:[F*2.45,F*2.3], g:0.8}, amr:t(18,24,30), amd:0.8, gain:0.7}});
+    return ev;
+  },
+  corvid(F,r,t){ // caws: chevron contour, energy on the 2nd harmonic, wobble, rasp
+    let ev = [], tt = 0, n = Math.round(t(2,4,6)), f0 = F*t(0.3,0.36,0.42);
+    for (let k = 0; k < n; k++){
+      ev.push({t:tt, n:{dur:t(0.2,0.28,0.36), f:[f0*0.85,f0*1.1,f0*0.8], r:0.85, K:12, fr:2, bw:0.7,
+        fmr:t(35,45,60), fmd:0.03, harsh:0.08, jbw:400, sub:0.12, att:0.02, rel:0.06}});
+      tt += 0.3 + t(0.12,0.2,0.35);
+    }
+    return ev;
+  },
+  raptor(F,r,t){ // descending hoarse scream
+    let f0 = F*t(1.5,1.8,2.1);
+    return [{t:0, n:{dur:t(1,1.4,1.8), f:[f0*0.85,f0,f0*1.02,f0*0.75], r:0.55, K:6, harsh:0.025, jbw:500, sub:0.08,
+      noise:0.1, nfr:1.2, nq:1.5, att:0.08, rel:0.25}}];
+  },
+  parrot(F,r,t){ // budgerigar-like contact call: fast FM, strong AM sidebands
+    let ev = [], n = 1 + (r() < 0.5);
+    for (let k = 0; k < n; k++){
+      let pts = [];
+      for (let i = 0; i < 5; i++) pts.push(F*t(0.8,1.1,1.5));
+      ev.push({t:k*0.4, n:{dur:t(0.15,0.18,0.22), f:pts, r:0.35, amr:t(150,250,400), amd:0.7, harsh:0.03}});
+    }
+    return ev;
+  },
+  kingfisher(F,r,t){ // dry rattle of broadband pulses
+    let ev = [], rate = t(14,18,24), n = Math.round(t(8,14,22));
+    for (let k = 0; k < n; k++) ev.push({t:k/rate, n:{dur:0.025, f:[F*1.2,F*0.9], noise:0.7, nq:1.2, r:0.5, att:0.002, rel:0.012, gain:1-0.4*k/n}});
+    return ev;
+  },
+  owl(F,r,t){ // low hoots
+    let ev = [], tt = 0, f0 = F*t(0.2,0.25,0.3), n = Math.round(t(2,3,5));
+    for (let k = 0; k < n; k++){
+      let d = k == 0 ? t(0.3,0.4,0.5) : t(0.2,0.3,0.4);
+      ev.push({t:tt, n:{dur:d, f:[f0*0.92,f0,f0*0.95], r:0.12, att:0.06, rel:0.12, fmr:6, fmd:k == n-1 ? 0.02 : 0}});
+      tt += d + t(0.15,0.25,0.4);
+    }
+    return ev;
+  },
+  swallow(F,r,t){ // twitter-warble at ~4.5 syllables/s ending in a ~30 Hz rattle
+    let ev = [], tt = 0, n = Math.round(t(5,8,12));
+    for (let k = 0; k < n; k++){
+      let a = F*t(0.7,1,1.5), b = F*t(0.7,1,1.5);
+      ev.push({t:tt, n:{dur:t(0.06,0.1,0.15), f:[a,(a+b)/2*t(0.9,1.1,1.3),b], r:0.25, harsh:0.02}});
+      tt += 1/t(3.8,4.6,5.4);
+    }
+    let rr = t(27,31,35), rn = Math.round(t(6,10,14));
+    for (let k = 0; k < rn; k++) ev.push({t:tt+k/rr, n:{dur:0.6/rr, f:[F*1.5,F*1.2], r:0.5, noise:0.4, att:0.002, rel:0.006}});
+    return ev;
+  },
+  wader(F,r,t){ // curlew-like "cur-lee": rising whistles with an upward flick
+    let ev = [], n = Math.round(t(1,2,3)), f0 = F*t(0.65,0.75,0.85);
+    for (let k = 0; k < n; k++) ev.push({t:k*0.6, n:{dur:t(0.3,0.4,0.55), f:[f0*0.8,f0,f0*1.05,f0*1.35], r:0.1, att:0.03, rel:0.05}});
+    return ev;
+  },
+};
+
+function voice_params(ap,seed){
+  let rng = make_rng(seed+'#song');
+  let tri = make_tri(rng);
+  let mix = ap.mix || ['finch',null,0];
+  let VA = VOICE[mix[0]] || VOICE.finch, VB = mix[1] ? VOICE[mix[1]] : null, bw = mix[2] || 0;
+  let num = k=>VB ? lerp(VA[k],VB[k],bw) : VA[k];
+  let an = (VB && rng() < bw) ? mix[1] : (VOICE[mix[0]] ? mix[0] : 'finch');
+  let dev = clamp(((ap.beak_size || 0.3)-0.3)*2.5,0,1.5);
+  return {
+    seed, rng, tri, an,
+    F: 7204*Math.pow(ap.mass,-0.24)*num('pitch')*tri(0.85,1,1.15),
+    gap: num('gap'), k: Math.max(1,Math.round(num('k'))), gape: num('gape'),
+    rate_max: 30-8*dev,
+    bw: rate=>Math.max(300,(7.55-0.124*rate-1.2*dev)*1000),
+  };
+}
+
+// log-frequency min-jerk glide through evenly spaced control points
+function glide(p){
+  return u=>{
+    let n = p.length-1, x = clamp(u,0,1)*n, i = Math.min(n-1,Math.floor(x));
+    return p[i]*Math.pow(p[i+1]/p[i],min_jerk(x-i));
+  };
+}
+
+// Utterances as a gamma renewal process over [0, T), wrapped so the loop is
+// seamless; at least one per loop, and >= 70% silence for repetitive singers
+// (Hartshorne 1956). The beak opens ~30 ms before each note (Goller et al.
+// 2004), wider for higher notes (Westneat et al. 1993), and closes over 80 ms.
+function make_song(V,T){
+  let {rng,tri,an,F} = V;
+  let wrap = t=>((t%T)+T)%T;
+  let gamma = ()=>{
+    let s = 0;
+    for (let i = 0; i < V.k; i++) s -= Math.log(1-rng());
+    return s*V.gap/V.k;
+  };
+  let utts = [], notes = [], t = rng()*T*0.5;
+  while (t < T){
+    let ev = VOX[an](F,rng,tri,V);
+    if (!utts.length){
+      let fit = ev.filter(e=>e.t+e.n.dur <= T-0.3);
+      ev = fit.length ? fit : [{t:0, n:Object.assign({},ev[0].n,{dur:Math.min(ev[0].n.dur,T*0.6)})}];
+    }
+    let end = 0;
+    for (let i = 0; i < ev.length; i++) end = Math.max(end,ev[i].t+ev[i].n.dur);
+    if (utts.length && t+end > T+utts[0].t0-0.2) break;
+    utts.push({t0:t, t1:t+end, n:ev.length});
+    for (let i = 0; i < ev.length; i++) notes.push(Object.assign({t:t+ev[i].t},ev[i].n));
+    t += Math.max(end*3.33,gamma());
+  }
+  let lead = 0.03, close = 0.08, top = 30*D2R*V.gape;
+  for (let i = 0; i < notes.length; i++){
+    let n = notes[i], fm = Math.exp(n.f.reduce((a,f)=>a+Math.log(f),0)/n.f.length);
+    n.gape = top*(0.4 + 0.6*clamp((fm/F-0.6)/1.2,0,1));
+  }
+  let gape_at = t=>{
+    let g = 0;
+    for (let i = 0; i < notes.length; i++){
+      let n = notes[i], tau = wrap(t-n.t+lead);
+      if (tau >= lead+n.dur+close) continue;
+      let k = tau < lead ? min_jerk(tau/lead) : tau < lead+n.dur ? 1 : 1-min_jerk((tau-lead-n.dur)/close);
+      g = Math.max(g,n.gape*k);
+    }
+    return g;
+  };
+  return {T, seed:V.seed, an, F, utts, notes, gape_at};
+}
+
+// One note added into a loop buffer, wrapping at the end. Harmonics come from
+// the Chebyshev recurrence sin(k p) = 2 cos(p) sin((k-1) p) - sin((k-2) p);
+// the noise band is a TPT state-variable bandpass (Zavalishin 2012).
+function voice_note(out,sr,n,rng){
+  let N = out.length, len = Math.max(1,Math.round(n.dur*sr)), i0 = Math.round(n.t*sr);
+  let F = glide(n.f), F2 = n.v2 ? glide(n.v2.f) : null;
+  let ph = rng()*2*PI, ph2 = rng()*2*PI, jit = 0, jit2 = 0, ic1 = 0, ic2 = 0;
+  let r = n.r === undefined ? 0.3 : n.r, K = n.K || 8, fr = n.fr || 1, bwr = n.bw || 0.6;
+  let att = Math.min(n.att || 0.008,n.dur*0.4), rel = Math.min(n.rel || 0.02,n.dur*0.5);
+  let harsh = n.harsh || 0, sub = n.sub || 0, nz = n.noise || 0, gain = n.gain || 1;
+  let lp = Math.exp(-2*PI*(n.jbw || 250)/sr), nk = 1/(n.nq || 2), ny = sr*0.45;
+  for (let i = 0; i < len; i++){
+    let u = i/len, t = i/sr;
+    let env = (t < att ? 0.5-0.5*Math.cos(PI*t/att) : 1)*(n.dur-t < rel ? 0.5-0.5*Math.cos(PI*(n.dur-t)/rel) : 1);
+    if (n.amr) env *= 1-n.amd*(0.5+0.5*Math.cos(2*PI*n.amr*t));
+    let f0 = F(u);
+    jit = lp*jit + (1-lp)*(rng()*2-1)*3.5;
+    let f = f0*(1 + (n.fmr ? n.fmd*Math.sin(2*PI*n.fmr*t) : 0) + harsh*jit);
+    ph += 2*PI*f/sr;
+    let fc = fr*f, bw = bwr*fc, sp = 0, sc = Math.sin(ph), c2 = 2*Math.cos(ph), a = 1, s = 0, nm = 0;
+    for (let k = 1; k <= K && k*f < ny; k++){
+      let d = (k*f-fc)/bw, w = a/(1+d*d);
+      s += w*sc; nm += w;
+      let nx = c2*sc-sp; sp = sc; sc = nx;
+      a *= r;
+    }
+    s = nm ? s/nm : 0;
+    if (sub) s = (1-sub)*s + sub*Math.sin(ph/2);
+    if (F2){
+      jit2 = lp*jit2 + (1-lp)*(rng()*2-1)*3.5;
+      ph2 += 2*PI*F2(u)*(1+harsh*jit2)/sr;
+      s = (s + n.v2.g*Math.sin(ph2))/(1+n.v2.g);
+    }
+    if (nz){
+      let g = Math.tan(PI*Math.min(f0*(n.nfr || 1),ny)/sr), a1 = 1/(1+g*(g+nk)), a2 = g*a1, a3 = g*a2;
+      let v3 = rng()*2-1-ic2, v1 = a1*ic1+a2*v3, v2 = ic2+a2*ic1+a3*v3;
+      ic1 = 2*v1-ic1; ic2 = 2*v2-ic2;
+      s = (1-nz)*s + nz*v1*2.5;
+    }
+    out[(i0+i)%N] += gain*env*s;
+  }
+}
+
+// Mono loop of length T at sample rate sr, peak-normalised with a soft clip.
+// once: just the first utterance, without the loop's silence.
+function render_song(song,sr=44100,once=false){
+  let u = song.utts[0], off = once ? u.t0-0.05 : 0;
+  let N = Math.max(1,Math.round((once ? u.t1-off+0.3 : song.T)*sr)), out = new Float32Array(N);
+  let rng = make_rng(song.seed+'#songnoise');
+  for (let i = 0; i < (once ? u.n : song.notes.length); i++){
+    let n = song.notes[i];
+    voice_note(out,sr,once ? Object.assign({},n,{t:n.t-off}) : n,rng);
+  }
+  let pk = 0;
+  for (let i = 0; i < N; i++) pk = Math.max(pk,Math.abs(out[i]));
+  let th = Math.tanh(1.2);
+  if (pk) for (let i = 0; i < N; i++) out[i] = 0.8*Math.tanh(1.2*out[i]/pk)/th;
+  return out;
+}
+
+// 16-bit mono PCM WAV bytes (works in the browser: no Buffer)
+function wav_encode(pcm,sr=44100){
+  let n = pcm.length, b = new Uint8Array(44+n*2), v = new DataView(b.buffer);
+  let s = (o,t)=>{ for (let i = 0; i < 4; i++) b[o+i] = t.charCodeAt(i); };
+  s(0,'RIFF'); v.setUint32(4,36+n*2,true); s(8,'WAVE'); s(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true); v.setUint32(24,sr,true);
+  v.setUint32(28,sr*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  s(36,'data'); v.setUint32(40,n*2,true);
+  for (let i = 0; i < n; i++) v.setInt16(44+i*2,Math.round(clamp(pcm[i],-1,1)*32767),true);
+  return b;
+}
+
+// The voice alone, without the animation rig; same song as animator(seed).
+function voice(seed,opts={}){
+  jsr = str_to_seed(seed);
+  perlin = null;
+  let arg = generate_params();
+  let T = opts.duration || 6;
+  let ap = anim_params(arg,seed,opts.intensity === undefined ? 0.7 : opts.intensity);
+  let song = make_song(voice_params(ap,seed),T);
+  return {seed, T, song, audio:(sr=44100)=>render_song(song,sr), clip:(sr=44100)=>render_song(song,sr,true)};
 }
 
 // Builds everything for one seed: the drawing RNG path is identical to
@@ -3749,13 +4062,17 @@ function animator(seed,opts={}){
   let arg = generate_params();
   let rig = build_rig(arg);
   let moves = Object.assign({},ANIM_MOVES,opts.moves);
-  let A = anim_rig(rig,{flap:moves.flap});
+  let A = anim_rig(rig,{flap:moves.flap, sing:moves.sing});
   let T = opts.duration || 6;
   let ap = anim_params(arg,seed,opts.intensity === undefined ? 0.7 : opts.intensity);
   let tl = make_timeline(ap,T,seed,moves);
   let rest = rest_pose(ap);
   let fpts = render_world(A,Object.assign({},rest,{lid:0})).flat();
   if (moves.wing) fpts = fpts.concat(render_world(A,Object.assign({},rest,{lid:0,wing:ap.wing_amp*1.2})).flat());
+  if (moves.sing){
+    let gm = tl.song.notes.reduce((a,n)=>Math.max(a,n.gape),0);
+    fpts = fpts.concat(render_world(A,Object.assign({},rest,{lid:0,gape:gm})).flat());
+  }
   if (tl.flap){
     // frame the whole flap: wings at the top and bottom of the stroke at full height
     let F = tl.flap;
@@ -3788,6 +4105,8 @@ function animator(seed,opts={}){
       for (let i = 0; i < n; i++) o.push(render_exact(A,tl.pose_at(i*T/n)));
       return o;
     },
+    song: tl.song,
+    audio: (sr=44100)=>render_song(tl.song,sr),
   };
 }
 
@@ -4027,6 +4346,7 @@ if (typeof module != "undefined"){
     main, bird, build_rig, render_static, generate_params, default_params, ARCHETYPES,
     animator, anim_rig, anim_params, make_timeline, rest_pose, render_exact, render_ops, render_world,
     breath_disp, frame_fit, apply_fit, TEMPERAMENT, ANIM_MOVES, parse_moves,
+    VOICE, VOX, voice, voice_params, make_song, render_song, wav_encode,
     draw_svg_flipbook, raster, gif_encode, anim_gif,
     reframe, cleanup, draw_svg, draw_svg_anim, draw_ps, binomen, seed_name, str_to_seed,
     get_bbox, FRAME_W, FRAME_H,
@@ -4049,7 +4369,7 @@ if (typeof module != "undefined"){
       let i = process.argv.indexOf('--'+name);
       return i >= 0 ? Number(process.argv[i+1]) : def;
     };
-    if (format == 'anim' || format == 'gif' || format == 'frames'){
+    if (format == 'anim' || format == 'gif' || format == 'frames' || format == 'wav'){
       if (seed === undefined){
         jsr = ~~(Math.random()*10000);
         seed = binomen();
@@ -4061,7 +4381,11 @@ if (typeof module != "undefined"){
       let oi = process.argv.indexOf('--out');
       let out = oi >= 0 ? process.argv[oi+1] : null;
       let fs = require('fs');
-      if (format == 'anim'){
+      if (format == 'wav'){
+        let sr = num('rate',44100);
+        let wav = Buffer.from(wav_encode(process.argv.includes('--once') ? render_song(an.song,sr,true) : an.audio(sr),sr));
+        if (out) fs.writeFileSync(out,wav); else process.stdout.write(wav);
+      }else if (format == 'anim'){
         let svg = draw_svg_flipbook(an.frames(fps),an.T);
         if (out) fs.writeFileSync(out,svg); else process.stdout.write(svg);
       }else if (format == 'gif'){

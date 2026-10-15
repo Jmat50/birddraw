@@ -102,6 +102,10 @@ Timing of one flap:
 
 **Occlusion.** During a flap the folded wing is hidden and the open wing is drawn in front of everything. The body plumage that was always generated under the folded wing shows through. The legs move to their own motion group and are clipped against the perch every frame.
 
+### Singing (optional)
+
+With `sing` on, the lower mandible becomes its own motion group, `jaw`. It hinges at the gape and opens about 30 ms ahead of each note of the seeded call, wider for higher notes. The angle ranges from 3° (owl) to about 35° (raptor scream). The voice, the gape curve and the occlusion details are in [`sound.md`](sound.md), section 8.
+
 ### Follow-through
 
 The crest lags head motion. It is a damped spring driven by the head's angular acceleration (Lasseter 1987, "secondary action"):
@@ -219,7 +223,7 @@ The tests check that `frame(0)` and `frame(T)` are identical and that every pose
 | `duration` (s, default 6) | `{duration}`, `--duration`, loop field | loop length; breathing snaps to it |
 | `TEMPERAMENT[archetype]` | `birddraw.js` | mass, saccade rate and spread, blink rate and coupling, tail style weights, rate and amplitude |
 | breath amplitude 0.025 | `anim_params` | belly excursion as a fraction of body depth |
-| `moves` | `{moves}`, `--moves`, checkboxes | `breath`, `head`, `blink`, `tail` (with teeter), `crest` on by default; `wing` (flicks) and `flap` off |
+| `moves` | `{moves}`, `--moves`, checkboxes | `breath`, `head`, `blink`, `tail` (with teeter), `crest` on by default; `wing` (flicks), `flap` and `sing` (beak gape) off |
 
 Blended archetypes ("thrush+") interpolate numeric temperament values by the blend weight, and pick categorical ones (head style, lid, tail style) from one parent.
 

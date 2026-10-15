@@ -20,6 +20,9 @@
   <button id="rand">random</button>
   <button id="svg">download svg</button>
   <label><input id="drawon" type="checkbox"> draw-on</label>
+  <label title="play each new bird's call once when it is drawn; when alive, loop it in sync with the animation"><input id="song" type="checkbox" autocomplete="off"> birdsong</label>
+  <button id="replay" style="display:none">replay</button>
+  <button id="wav" title="the call (the whole loop when alive with birdsong)">download wav</button>
 </div>
 <div class="bar">
   <label><input id="alive" type="checkbox"> alive</label>
@@ -27,8 +30,7 @@
   <label>loop <input id="dur" type="number" min="2" max="20" step="1" value="6"> s</label>
   <label title="render with exact hidden-line clipping (what a plotter would draw)"><input id="exact" type="checkbox"> exact</label>
   <button id="flip">download animated svg</button>
-  <button id="gif">download gif</button>
-</div>
+  <button id="gif">download gif</button></div>
 <div class="bar" id="moves">
   movements:
   <label><input type="checkbox" data-move="breath" checked> breathing</label>
@@ -38,6 +40,7 @@
   <label><input type="checkbox" data-move="crest" checked> crest</label>
   <label><input type="checkbox" data-move="wing"> wing flicks</label>
   <label><input type="checkbox" data-move="flap"> wing flaps</label>
+  <label><input type="checkbox" data-move="sing"> singing</label>
 </div>
 <div id="out"></div>
 <canvas id="cv" style="display:none"></canvas>
@@ -48,6 +51,8 @@ let $ = id => document.getElementById(id);
 let current = null;
 let live = null;
 let raf = 0;
+let actx = null, asrc = null;
+let vcur = null, once = null;
 
 function fname(ext){
   return current.seed.replace(/[^A-Za-z0-9]+/g, '_') + ext;
@@ -70,6 +75,49 @@ function render(seed){
   location.hash = encodeURIComponent(seed);
   live = null;
   update_alive();
+  // when alive, update_alive already started the loop
+  if ($('song').checked && !$('alive').checked){
+    audio_ctx();
+    setTimeout(play_song, 0);
+  }
+}
+
+function audio_ctx(){
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state == 'suspended') actx.resume();
+  return actx;
+}
+// the call alone (no animation rig), for the drawn seed and loop length
+function get_voice(){
+  let T = Number($('dur').value) || 6;
+  if (!vcur || vcur.seed != current.seed || vcur.T != T) vcur = voice(current.seed, {duration: T});
+  return vcur;
+}
+function stop_song(){
+  if (!once) return;
+  once.onended = null;
+  once.stop();
+  once.disconnect();
+  once = null;
+}
+// plays the bird's utterances once
+function play_song(){
+  if (!current) return;
+  let v = get_voice(), c = audio_ctx();
+  if (!v.buf || v.buf.sampleRate != c.sampleRate){
+    let pcm = v.clip(c.sampleRate);
+    v.buf = c.createBuffer(1, pcm.length, c.sampleRate);
+    v.buf.copyToChannel(pcm, 0);
+  }
+  stop_song();
+  once = c.createBufferSource();
+  once.buffer = v.buf;
+  once.connect(c.destination);
+  once.onended = () => { once = null; };
+  once.start();
+  let s = v.song;
+  $('info').textContent = $('info').textContent.replace(/; voice .*$/, '') +
+    `; voice ${s.an} ${(s.F/1000).toFixed(1)} kHz, ${v.buf.duration.toFixed(1)} s`;
 }
 
 function build_live(){
@@ -85,6 +133,10 @@ function build_live(){
   if (mv.tail) parts.push(`tail ${ap.tail_style}`);
   if (mv.wing) parts.push(`${tl.flicks.length} wing flick bouts`);
   if (tl.flap) parts.push(`flap: ${tl.flap.nb} beats at ${tl.flap.fb.toFixed(1)} Hz from ${tl.flap.t0.toFixed(1)} s`);
+  if (mv.sing || $('song').checked){
+    let s = tl.song;
+    parts.push(`voice ${s.an} ${(s.F/1000).toFixed(1)} kHz, ${s.utts.length} utterance${s.utts.length > 1 ? 's' : ''}`);
+  }
   $('info').textContent = `alive: ${live.arg.archetype}, rig ${Math.round(performance.now()-t0)} ms; ` +
     (parts.join(', ') || 'no movement');
 }
@@ -106,7 +158,9 @@ function draw_frame(now){
   ctx.lineJoin = 'round';
   ctx.strokeRect(10, 10, FRAME_W, FRAME_H);
   ctx.translate(10, 10);
-  let t = ((now - live.t0) / 1000) % live.T;
+  // with birdsong on, the audio clock drives the picture so the beak stays in sync
+  let t = asrc && actx.state == 'running' ? actx.currentTime - live.a0 - (actx.outputLatency || 0) : (now - live.t0) / 1000;
+  t = ((t % live.T) + live.T) % live.T;
   let path = ls => {
     let p = new Path2D();
     for (let l of ls){
@@ -134,13 +188,41 @@ function draw_frame(now){
   raf = requestAnimationFrame(draw_frame);
 }
 
+function stop_audio(){
+  if (!asrc) return;
+  // keep the animation's phase when it falls back to the wall clock
+  if (live && actx.state == 'running') live.t0 = performance.now() - (actx.currentTime - live.a0 - (actx.outputLatency || 0))*1000;
+  asrc.stop();
+  asrc.disconnect();
+  asrc = null;
+}
+// the loop is rendered once per bird at the device rate and looped sample-exactly
+function play_audio(){
+  stop_audio();
+  if (!$('song').checked || !live) return;
+  stop_song();
+  audio_ctx();
+  if (!live.abuf){
+    let pcm = live.audio(actx.sampleRate);
+    live.abuf = actx.createBuffer(1, pcm.length, actx.sampleRate);
+    live.abuf.copyToChannel(pcm, 0);
+  }
+  asrc = actx.createBufferSource();
+  asrc.buffer = live.abuf;
+  asrc.loop = true;
+  asrc.connect(actx.destination);
+  live.a0 = actx.currentTime + 0.05;
+  asrc.start(live.a0);
+}
+
 function update_alive(){
   cancelAnimationFrame(raf);
   let on = $('alive').checked && current;
   $('cv').style.display = on ? 'block' : 'none';
   $('out').style.display = on ? 'none' : 'block';
-  if (!on) return;
+  if (!on){ stop_audio(); return; }
   if (!live) build_live();
+  play_audio();
   raf = requestAnimationFrame(draw_frame);
 }
 
@@ -151,10 +233,30 @@ $('draw').onclick = () => render($('seed').value || random_seed());
 $('rand').onclick = () => render(random_seed());
 $('seed').onkeydown = e => { if (e.key == 'Enter') $('draw').onclick(); };
 $('drawon').onchange = () => render(current.seed);
-$('alive').onchange = update_alive;
+// birdsong in alive mode also opens the beak
+function want_sing(){
+  let sing = document.querySelector('#moves [data-move=sing]');
+  if ($('song').checked && $('alive').checked && !sing.checked){ sing.checked = true; live = null; }
+}
+$('alive').onchange = () => { want_sing(); update_alive(); };
 $('intensity').onchange = () => { live = null; update_alive(); };
 $('dur').onchange = () => { live = null; update_alive(); };
 document.querySelectorAll('#moves input').forEach(c => c.onchange = () => { live = null; update_alive(); });
+// audio needs a click to start (autoplay policy): once per new bird, or looped with the animation when alive
+$('song').onchange = () => {
+  let on = $('song').checked;
+  $('replay').style.display = on ? '' : 'none';
+  if (!on){ stop_song(); stop_audio(); return; }
+  if ($('alive').checked){ want_sing(); update_alive(); }
+  else play_song();
+};
+$('replay').onclick = () => $('alive').checked ? play_audio() : play_song();
+$('wav').onclick = () => {
+  if (!current) return;
+  let loop = $('song').checked && $('alive').checked && live;
+  let pcm = loop ? live.audio(44100) : get_voice().clip(44100);
+  download(new Blob([wav_encode(pcm, 44100)], {type: 'audio/wav'}), fname(loop ? '_alive.wav' : '_song.wav'));
+};
 $('svg').onclick = () => { if (current) download(new Blob([current.svg], {type: 'image/svg+xml'}), fname('.svg')); };
 $('flip').onclick = () => {
   if (!current) return;

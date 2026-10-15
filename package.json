@@ -9,7 +9,7 @@
   "scripts": {
     "gallery": "node tools/gallery.js 24",
     "anim": "node tools/gallery.js --anim 8",
-    "test": "node test/determinism.js 50 && node test/static_golden.js && node test/animation.js 12",
+    "test": "node test/determinism.js 50 && node test/static_golden.js && node test/animation.js 12 && node test/sound.js 12",
     "test:golden:record": "node test/static_golden.js --record"
   },
   "keywords": ["generative", "procedural", "plotter", "svg", "birds", "fishdraw"],
