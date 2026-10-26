@@ -995,8 +995,9 @@ function fish_eye_a(ex,ey,rad){
     ]);
   }
 
-  let ef = shade_shape(eye2,2.7,10,10);
-  return [eye0,[eye0,eye1,eye2,...ef]];
+  // outline + pupil only — no shade_shape hatch (it matched head shade and
+  // looked like hatching punched straight through the eye)
+  return [eye0,[eye0,eye1,eye2]];
 }
 
 function fish_eye_b(ex,ey,rad){
@@ -1860,8 +1861,10 @@ function head_parts(arg,hc,HR,body_world){
   let lines = clip(closed(hp),body_world).false;
   let n_seam = lines.length;
   let fp = face_predicate(arg,hc,HR,E,ER,bbase);
+  // face/head hatch kept off the eye and beak so it does not read as a flat stamp through features
+  let face_ink = [];
   if (fp){
-    lines.push(...patternshade_shape(hp,2.1,fp));
+    face_ink.push(...patternshade_shape(hp,2.1,fp));
   }
   if (arg.face_disc){
     // facial disc rim (ruff) behind the eye, with short outward ticks
@@ -1888,7 +1891,11 @@ function head_parts(arg,hc,HR,body_world){
     drift: 0,
     keep: (x,y)=>arg.plumage_detail*(x > hc[0] ? 0.35 : 0.1),
   }));
-  lines.push(...shade_shape(hp,4,2,HR*0.35).filter(l=>rand()<0.8));
+  face_ink.push(...shade_shape(hp,4,2,HR*0.35).filter(l=>rand()<0.55));
+  let eye_hole = ellipse_poly(E[0],E[1],ER*1.6,ER*1.6,28);
+  face_ink = clip_multi(face_ink,eye_hole).false;
+  for (let i = 0; i < bk.masks.length; i++) face_ink = clip_multi(face_ink,bk.masks[i]).false;
+  lines.push(...face_ink);
   let masks = [hp];
   let n_end = lines.length;
   let crest = null;
