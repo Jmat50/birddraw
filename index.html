@@ -17,9 +17,9 @@
   button{font:inherit;padding:8px 12px;min-height:40px;border:1px solid #999;border-radius:4px;background:#f7f7f7;cursor:pointer;-webkit-tap-highlight-color:transparent}
   button:active{background:#ddd}
   #seed{flex:1 1 160px;min-width:0;width:auto;max-width:100%;padding:8px 10px;font-size:16px;border:1px solid #999;border-radius:4px}
-  /* fit bird in remaining viewport: width capped by height so alive canvas is not huge */
-  #out,#cv{width:min(100%,520px,calc((100dvh - 14rem) * 480 / 440));max-width:100%}
-  #out svg,#cv{background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.2);width:100%;height:auto;max-height:calc(100dvh - 14rem);display:block;touch-action:manipulation}
+  /* stage sized in JS to fit viewport while locking FRAME aspect (480:440 incl. border) */
+  #out,#cv{width:min(100%,520px);max-width:100%;aspect-ratio:480/440;height:auto;flex-shrink:0}
+  #out svg,#cv{background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.2);width:100%;height:100%;display:block;touch-action:manipulation;aspect-ratio:480/440;object-fit:contain}
   #info{font-size:12px;color:#666;margin-top:8px;max-width:520px;width:100%;text-align:center;padding:0 4px;word-break:break-word}
   #intensity{width:100px;max-width:40vw;accent-color:#333}
   #dur{width:52px;padding:6px 4px;font-size:16px;border:1px solid #999;border-radius:4px}
@@ -79,6 +79,39 @@ let live = null;
 let raf = 0;
 let actx = null, asrc = null;
 let vcur = null, once = null;
+// drawing frame incl. 10px border on each side
+let STAGE_W = FRAME_W + 20, STAGE_H = FRAME_H + 20, STAGE_AR = STAGE_W / STAGE_H;
+
+function size_stage(){
+  let out = $('out'), cv = $('cv'), info = $('info');
+  // remaining viewport below the control bars (not the stage itself — display:none zeros its top)
+  let top = 12;
+  document.querySelectorAll('.bar').forEach(b => {
+    let bottom = b.getBoundingClientRect().bottom;
+    if (bottom > top) top = bottom;
+  });
+  top += 8;
+  let pad = 12 + (info ? info.offsetHeight + 12 : 24);
+  let maxW = Math.min(document.documentElement.clientWidth - 24, 520);
+  // allow small stages on short viewports; never invent height that forces overflow/squash
+  let maxH = Math.max(64, window.innerHeight - top - pad);
+  // lock aspect: derive one axis from the other so rounding cannot squash
+  let w = Math.floor(Math.min(maxW, maxH * STAGE_AR));
+  let h = Math.round(w / STAGE_AR);
+  if (h > maxH){ h = Math.floor(maxH); w = Math.round(h * STAGE_AR); }
+  if (w < 64){ w = 64; h = Math.round(w / STAGE_AR); }
+  for (let el of [out, cv]){
+    el.style.width = w + 'px';
+    el.style.height = h + 'px';
+  }
+  // keep bitmap AR in sync with CSS immediately (don't wait for the next raf)
+  if (cv.style.display != 'none'){
+    let dpr = window.devicePixelRatio || 1;
+    let k = Math.min(w / STAGE_W, h / STAGE_H) * dpr;
+    let bw = Math.round(STAGE_W * k), bh = Math.round(STAGE_H * k);
+    if (cv.width != bw || cv.height != bh){ cv.width = bw; cv.height = bh; }
+  }
+}
 
 function fname(ext){
   return current.seed.replace(/[^A-Za-z0-9]+/g, '_') + ext;
@@ -170,10 +203,12 @@ function build_live(){
 function draw_frame(now){
   let cv = $('cv');
   let dpr = window.devicePixelRatio || 1;
-  let W = FRAME_W + 20, H = FRAME_H + 20;
-  let cssw = cv.clientWidth || W;
-  let k = cssw / W * dpr;
-  if (cv.width != Math.round(W*k)){ cv.width = Math.round(W*k); cv.height = Math.round(H*k); }
+  let W = STAGE_W, H = STAGE_H;
+  // use the smaller axis so a stale CSS size cannot stretch the drawing
+  let cssw = cv.clientWidth || W, cssh = cv.clientHeight || H;
+  let k = Math.min(cssw / W, cssh / H) * dpr;
+  let bw = Math.round(W*k), bh = Math.round(H*k);
+  if (cv.width != bw || cv.height != bh){ cv.width = bw; cv.height = bh; }
   let ctx = cv.getContext('2d');
   ctx.setTransform(k, 0, 0, k, 0, 0);
   ctx.fillStyle = 'floralwhite';
@@ -246,11 +281,15 @@ function update_alive(){
   let on = $('alive').checked && current;
   $('cv').style.display = on ? 'block' : 'none';
   $('out').style.display = on ? 'none' : 'block';
+  size_stage();
   if (!on){ stop_audio(); return; }
   if (!live) build_live();
+  size_stage(); // info line grew; re-fit so we never overflow by stretching
   play_audio();
   raf = requestAnimationFrame(draw_frame);
 }
+window.addEventListener('resize', () => { size_stage(); });
+window.addEventListener('orientationchange', () => setTimeout(size_stage, 50));
 
 function random_seed(){
   return seed_name(String(Math.random()));

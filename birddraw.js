@@ -2705,7 +2705,7 @@ function cleanup(polylines){
 }
 
 function draw_svg(polylines,W=FRAME_W,H=FRAME_H){
-  let o = `<svg xmlns="http://www.w3.org/2000/svg" width="${W+20}" height="${H+20}">`;
+  let o = `<svg xmlns="http://www.w3.org/2000/svg" width="${W+20}" height="${H+20}" viewBox="0 0 ${W+20} ${H+20}" preserveAspectRatio="xMidYMid meet">`;
   o += `<rect x="0" y="0" width="${W+20}" height="${H+20}" fill="floralwhite"/><rect x="10" y="10" width="${W}" height="${H}" stroke="black" stroke-width="1" fill="none"/><path stroke="black" stroke-width="1" fill="none" stroke-linecap="round" stroke-linejoin="round" d="`;
   for (let i = 0; i < polylines.length; i++){
     o += '\nM ';
@@ -2719,7 +2719,7 @@ function draw_svg(polylines,W=FRAME_W,H=FRAME_H){
 }
 
 function draw_svg_anim(polylines,speed,W=FRAME_W,H=FRAME_H){
-  let o = `<svg xmlns="http://www.w3.org/2000/svg" width="${W+20}" height="${H+20}">`;
+  let o = `<svg xmlns="http://www.w3.org/2000/svg" width="${W+20}" height="${H+20}" viewBox="0 0 ${W+20} ${H+20}" preserveAspectRatio="xMidYMid meet">`;
   o += `<rect x="0" y="0" width="${W+20}" height="${H+20}" fill="floralwhite"/><rect x="10" y="10" width="${W}" height="${H}" stroke="black" stroke-width="1" fill="none"/>`;
   let lengths = [];
   let acc_lengths = [];
@@ -4162,7 +4162,7 @@ function draw_svg_flipbook(frames,T,W=FRAME_W,H=FRAME_H){
     put(a,p,e.l);
   });
   let kt = v=>+(v).toFixed(6);
-  let o = `<svg xmlns="http://www.w3.org/2000/svg" width="${W+20}" height="${H+20}">`;
+  let o = `<svg xmlns="http://www.w3.org/2000/svg" width="${W+20}" height="${H+20}" viewBox="0 0 ${W+20} ${H+20}" preserveAspectRatio="xMidYMid meet">`;
   o += `<rect x="0" y="0" width="${W+20}" height="${H+20}" fill="floralwhite"/><rect x="10" y="10" width="${W}" height="${H}" stroke="black" stroke-width="1" fill="none"/>`;
   o += `<g stroke="black" stroke-width="1" fill="none" stroke-linecap="round" stroke-linejoin="round">`;
   spans.forEach((s,k)=>{
